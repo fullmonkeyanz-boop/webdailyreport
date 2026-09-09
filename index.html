@@ -873,7 +873,8 @@ function renderDayForm(dateStr){
 
   var itemsHtml = items.map(function(it, idx){
     var opts = '<option value="">（未選択）</option>' + itemOptions.map(function(w){
-      return '<option value="'+w.code+'" '+(it.code===w.code?'selected':'')+'>'+escapeHtml(w.code+' '+w.name)+'</option>';
+      var label = w.code+' '+w.name+(w.contractor?'（'+w.contractor+'）':'');
+      return '<option value="'+w.code+'" '+(it.code===w.code?'selected':'')+'>'+escapeHtml(label)+'</option>';
     }).join('');
     return (
       '<div class="item-row">' +
