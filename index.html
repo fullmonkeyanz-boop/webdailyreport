@@ -332,7 +332,7 @@ var state = {
   accessDoc: undefined, // undefined=読込中, null=未設定, {codeHash}=設定済み
   view: 'input',
   workers: [],       // [{id,name,order,active}]
-  workItems: [],     // [{id,code,name,order,active}]
+  workItems: [],     // [{id,code,name,contractor,order,active}]
   holidaySettings: {weeklyOff:[0,6]},
   holidayExceptions: {}, // dateStr -> {type,label}
   workerId: null,
@@ -440,6 +440,29 @@ function confirmModal(title, body, onYes){
   );
   document.querySelector('[data-act="modal-yes"]').addEventListener('click', function(){ closeModal(); onYes(); });
   document.querySelector('[data-act="modal-cancel"]').addEventListener('click', closeModal);
+}
+function openItemEditModal(id){
+  var it = state.workItems.find(function(x){return x.id===id;});
+  if (!it) return;
+  openModal(
+    '<h3 style="margin-bottom:8px;font-size:15.5px">作業内容を編集</h3>' +
+    '<p class="caption" style="margin-bottom:12px">製番「'+escapeHtml(it.code)+'」は登録後、変更できません。</p>' +
+    '<div class="field" style="margin-bottom:10px"><label>請負会社</label><input type="text" id="editItemContractor" value="'+escapeHtml(it.contractor||'')+'"></div>' +
+    '<div class="field"><label>名称</label><input type="text" id="editItemName" value="'+escapeHtml(it.name||'')+'"></div>' +
+    '<div class="btn-row" style="margin-top:16px">' +
+      '<button class="btn" data-act="modal-cancel" style="flex:1">キャンセル</button>' +
+      '<button class="btn btn-primary" data-act="modal-save-item" style="flex:1">保存</button>' +
+    '</div>'
+  );
+  document.querySelector('[data-act="modal-cancel"]').addEventListener('click', closeModal);
+  document.querySelector('[data-act="modal-save-item"]').addEventListener('click', function(){
+    var contractor = document.getElementById('editItemContractor').value.trim();
+    var name = document.getElementById('editItemName').value.trim();
+    if (!name){ toast('名称を入力してください', true); return; }
+    state.db.collection('workItems').doc(id).update({name:name, contractor:contractor}).then(function(){
+      closeModal(); toast('更新しました');
+    });
+  });
 }
 
 /* ================= hashing ================= */
@@ -1152,9 +1175,11 @@ function renderMasterItems(){
   var rows = state.workItems.slice().sort(function(a,b){return (a.order||0)-(b.order||0);}).map(function(it){
     return (
       '<div class="list-row">' +
-        '<span class="code">'+escapeHtml(it.code)+'</span>' +
+        '<span class="code" style="min-width:6ch">'+escapeHtml(it.code)+'</span>' +
+        '<span class="code" style="min-width:6ch">'+escapeHtml(it.contractor||'')+'</span>' +
         '<span class="name">'+escapeHtml(it.name)+'</span>' +
         '<button class="switch" role="switch" aria-checked="'+(it.active!==false)+'" data-toggle-item="'+it.id+'"></button>' +
+        '<button class="btn btn-sm" data-edit-item="'+it.id+'">編集</button>' +
         '<button class="btn btn-sm btn-danger" data-del-item="'+it.id+'">削除</button>' +
       '</div>'
     );
@@ -1163,10 +1188,14 @@ function renderMasterItems(){
     '<div class="panel">' +
       '<div class="panel-head"><h2>作業内容マスター（製番）</h2></div>' +
       '<p class="caption" style="margin-bottom:10px">1＝工務一般、0＝雑用、00＝前山 は初期登録済みです。</p>' +
+      '<div class="list-row" style="font-size:11px;color:var(--text-muted)">' +
+        '<span style="min-width:6ch">製番</span><span style="min-width:6ch">請負会社</span><span style="flex:1">名称</span>' +
+      '</div>' +
       '<div class="stack" style="gap:0">'+rows+'</div>' +
       '<hr class="divider" style="margin:14px 0">' +
-      '<div class="item-row">' +
+      '<div class="item-row" style="grid-template-columns:6ch 6ch 1fr auto">' +
         '<div class="field"><label>製番</label><input type="text" id="newItemCode" placeholder="例）86"></div>' +
+        '<div class="field"><label>請負会社</label><input type="text" id="newItemContractor" placeholder="例）〇〇建設"></div>' +
         '<div class="field"><label>名称</label><input type="text" id="newItemName" placeholder="例）〇〇工事"></div>' +
         '<button class="btn btn-primary" data-act="add-item" style="align-self:end;height:40px">追加</button>' +
       '</div>' +
@@ -1388,15 +1417,17 @@ function bindMasterView(){
   var addItemBtn = document.querySelector('[data-act="add-item"]');
   if (addItemBtn) addItemBtn.addEventListener('click', function(){
     var codeInput = document.getElementById('newItemCode');
+    var contractorInput = document.getElementById('newItemContractor');
     var nameInput = document.getElementById('newItemName');
     var code = codeInput.value.trim();
+    var contractor = contractorInput.value.trim();
     var name = nameInput.value.trim();
     if (!code || !name) { toast('製番と名称を入力してください', true); return; }
     state.db.collection('workItems').doc(code).get().then(function(snap){
       if (snap.exists){ toast('この製番はすでに登録されています', true); return; }
       var order = state.workItems.length ? Math.max.apply(null, state.workItems.map(function(w){return w.order||0;}))+1 : 0;
-      return state.db.collection('workItems').doc(code).set({code:code, name:name, order:order, active:true}).then(function(){
-        toast('追加しました'); codeInput.value=''; nameInput.value='';
+      return state.db.collection('workItems').doc(code).set({code:code, name:name, contractor:contractor, order:order, active:true}).then(function(){
+        toast('追加しました'); codeInput.value=''; contractorInput.value=''; nameInput.value='';
       });
     });
   });
@@ -1405,6 +1436,11 @@ function bindMasterView(){
       var id = el.getAttribute('data-toggle-item');
       var it = state.workItems.find(function(x){return x.id===id;});
       state.db.collection('workItems').doc(id).update({active: !(it.active!==false)});
+    });
+  });
+  document.querySelectorAll('[data-edit-item]').forEach(function(el){
+    el.addEventListener('click', function(){
+      openItemEditModal(el.getAttribute('data-edit-item'));
     });
   });
   document.querySelectorAll('[data-del-item]').forEach(function(el){
