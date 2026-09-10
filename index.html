@@ -246,6 +246,8 @@ a{color:var(--accent)}
 /* ============ ledger table ============ */
 .table-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-s)}
 table.ledger{border-collapse:collapse;width:100%;min-width:560px;font-size:12.5px}
+table.ledger.ledger-compact{min-width:0}
+table.ledger.ledger-compact td:last-child,table.ledger.ledger-compact th:last-child{width:90px}
 table.ledger th,table.ledger td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap}
 table.ledger th:first-child,table.ledger td:first-child{text-align:left;position:sticky;left:0;background:var(--surface);font-weight:600}
 table.ledger thead th{background:var(--surface-2);color:var(--text-muted);font-weight:700;font-size:11px;letter-spacing:.02em}
@@ -1129,7 +1131,7 @@ function renderSummaryDailyItems(cache, y, m){
     detailHtml = (
       '<hr class="divider" style="margin:14px 0">' +
       '<div class="eyebrow" style="margin-bottom:8px">'+m+'月'+selDay+'日の製番別集計（全作業者）</div>' +
-      '<div class="table-scroll"><table class="ledger"><thead><tr><th>製番・作業内容</th><th>時間(h)</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+      '<div class="table-scroll"><table class="ledger ledger-compact"><thead><tr><th>製番・作業内容</th><th>時間(h)</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     );
   }
 
