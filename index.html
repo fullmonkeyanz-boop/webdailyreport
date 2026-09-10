@@ -1390,19 +1390,22 @@ function bindInputView(){
     var total = computeTotal(state.selDate, day);
     var warnKeys = [], warnMsg = '';
     if (total > 8){
+      // 超過分＝早出残業。有休・欠勤・遅刻・早退・休出は入力なしが正しい
       var excess = round2(total - 8);
-      if (round2(day.overtime) !== excess){
-        warnKeys = ['overtime'];
-        warnMsg = '勤務時間が8時間を超えているので早出残業の入力をお願いします';
-      }
+      if (round2(day.overtime) !== excess) warnKeys.push('overtime');
+      ['paidLeave','absence','late','earlyLeave','holidayWork'].forEach(function(k){
+        if (round2(day[k]) !== 0) warnKeys.push(k);
+      });
     } else if (total > 0 && total < 8){
+      // 不足分＝遅刻＋早退の合計。有休・欠勤・早出残業・休出は入力なしが正しい
       var shortfall = round2(8 - total);
       var lateEarly = round2(day.late + day.earlyLeave);
-      if (lateEarly !== shortfall){
-        warnKeys = ['late','earlyLeave'];
-        warnMsg = '勤務時間が8時間未満なので遅刻か早退時間を入力してください';
-      }
+      if (lateEarly !== shortfall){ warnKeys.push('late'); warnKeys.push('earlyLeave'); }
+      ['paidLeave','absence','overtime','holidayWork'].forEach(function(k){
+        if (round2(day[k]) !== 0) warnKeys.push(k);
+      });
     }
+    if (warnKeys.length) warnMsg = '入力に誤りがあります。誤っている項目の数字を削除してください。';
     state.dayWarnKeys = warnKeys;
     // 入力中の値を消さないよう、再描画せずにハイライトだけその場で切り替える(まず全部解除)
     document.querySelectorAll('[data-field-wrap]').forEach(function(w){ w.classList.remove('field-warn'); });
