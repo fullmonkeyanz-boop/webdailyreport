@@ -167,6 +167,8 @@ a{color:var(--accent)}
   padding:9px 10px;min-height:40px;color:var(--text);width:100%;
 }
 .field input:focus-visible,.field select:focus-visible{outline:2px solid var(--accent);outline-offset:0}
+.field-warn label{color:var(--red)}
+.field-warn input{border-color:var(--red);background:var(--red-soft)}
 .field-row{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .num-input{font-family:var(--font-mono);text-align:right}
 
@@ -179,7 +181,7 @@ a{color:var(--accent)}
 
 .divider{height:1px;background:var(--border);border:none;margin:2px 0}
 
-.toast-wrap{position:fixed;left:0;right:0;bottom:14px;display:flex;justify-content:center;z-index:60;pointer-events:none}
+.toast-wrap{position:fixed;left:0;right:0;bottom:14px;display:flex;flex-direction:column;align-items:center;gap:8px;z-index:60;pointer-events:none}
 .toast{
   background:var(--accent-strong);color:#fff;padding:10px 18px;border-radius:99px;font-size:13px;font-weight:600;
   box-shadow:var(--shadow);opacity:0;transform:translateY(6px);transition:opacity .2s,transform .2s;
@@ -877,9 +879,11 @@ function renderDayForm(dateStr){
     itemOptions.push(maeyama);
   }
 
+  var warnKeys = state.dayWarnKeys || [];
   var fieldsHtml = FIELD_DEFS.map(function(f){
+    var warn = warnKeys.indexOf(f.key) !== -1;
     return (
-      '<div class="field">' +
+      '<div class="field'+(warn?' field-warn':'')+'" data-field-wrap="'+f.key+'">' +
         '<label>'+f.label+'</label>' +
         '<input type="number" class="num-input" step="0.5" min="0" inputmode="decimal" data-field="'+f.key+'" value="'+(num(day[f.key])||'')+'">' +
       '</div>'
@@ -1303,13 +1307,14 @@ function bindInputView(){
   });
   var prevM = document.querySelector('[data-act="prev-month"]');
   var nextM = document.querySelector('[data-act="next-month"]');
-  if (prevM) prevM.addEventListener('click', function(){ state.inputYM = prevMonth(state.inputYM.y, state.inputYM.m); state.selDate=null; subscribeMonthDoc(); });
-  if (nextM) nextM.addEventListener('click', function(){ state.inputYM = nextMonth(state.inputYM.y, state.inputYM.m); state.selDate=null; subscribeMonthDoc(); });
+  if (prevM) prevM.addEventListener('click', function(){ state.inputYM = prevMonth(state.inputYM.y, state.inputYM.m); state.selDate=null; state.dayWarnKeys=[]; subscribeMonthDoc(); });
+  if (nextM) nextM.addEventListener('click', function(){ state.inputYM = nextMonth(state.inputYM.y, state.inputYM.m); state.selDate=null; state.dayWarnKeys=[]; subscribeMonthDoc(); });
 
   document.querySelectorAll('[data-day]').forEach(function(el){
     el.addEventListener('click', function(){
       var d = +el.getAttribute('data-day');
       state.selDate = ymd(state.inputYM.y, state.inputYM.m, d);
+      state.dayWarnKeys = [];
       render();
       setTimeout(function(){
         var panel = document.getElementById('dayFormPanel');
@@ -1319,7 +1324,7 @@ function bindInputView(){
   });
 
   var closeBtn = document.querySelector('[data-act="close-day"]');
-  if (closeBtn) closeBtn.addEventListener('click', function(){ state.selDate = null; render(); });
+  if (closeBtn) closeBtn.addEventListener('click', function(){ state.selDate = null; state.dayWarnKeys=[]; render(); });
 
   document.querySelectorAll('[data-act="day-prev"],[data-act="day-next"]').forEach(function(el){
     el.addEventListener('click', function(){
@@ -1328,6 +1333,7 @@ function bindInputView(){
       var d = new Date(parts[0], parts[1]-1, parts[2]);
       d.setDate(d.getDate() + (el.getAttribute('data-act')==='day-next'?1:-1));
       var ny=d.getFullYear(), nm=d.getMonth()+1;
+      state.dayWarnKeys = [];
       if (ny!==state.inputYM.y || nm!==state.inputYM.m){
         state.inputYM = {y:ny,m:nm};
         state.selDate = ymd(ny,nm,d.getDate());
@@ -1346,7 +1352,17 @@ function bindInputView(){
     el.addEventListener('change', function(){
       var idx = el.getAttribute('data-item-code');
       var hoursEl = document.querySelector('[data-item-hours="'+idx+'"]');
-      if (el.value && hoursEl && !hoursEl.value){ hoursEl.value = 8; }
+      if (el.value && hoursEl && !hoursEl.value){
+        // 他の製番欄にすでに時間が入力されていれば、8時間からの残り時間を初期値にする
+        var usedHours = 0;
+        for (var i=0;i<3;i++){
+          if (String(i) === idx) continue;
+          var otherHoursEl = document.querySelector('[data-item-hours="'+i+'"]');
+          if (otherHoursEl && otherHoursEl.value) usedHours += num(otherHoursEl.value);
+        }
+        var remaining = round2(8 - usedHours);
+        hoursEl.value = remaining > 0 ? remaining : 0;
+      }
       if (!el.value && hoursEl){ hoursEl.value = ''; }
       var noteWrap = document.querySelector('[data-item-note-wrap="'+idx+'"]');
       if (noteWrap) noteWrap.hidden = (el.value !== ZATSUYOU_CODE);
@@ -1371,11 +1387,26 @@ function bindInputView(){
   var saveBtn = document.querySelector('[data-act="save-day"]');
   if (saveBtn) saveBtn.addEventListener('click', function(){
     var day = readDayForm();
+    var total = computeTotal(state.selDate, day);
+    var warnKeys = [], warnMsg = '';
+    if (total > 8){
+      warnKeys = ['overtime'];
+      warnMsg = '勤務時間が8時間を超えているので早出残業の入力をお願いします';
+    } else if (total > 0 && total < 8){
+      warnKeys = ['late','earlyLeave'];
+      warnMsg = '勤務時間が8時間未満なので遅刻か早退時間を入力してください';
+    }
+    state.dayWarnKeys = warnKeys;
     saveDay(state.selDate, day, function(){
-      state.selDate = null;
-      render();
-      var cal = document.querySelector('.day-grid');
-      if (cal) cal.scrollIntoView({behavior:'smooth', block:'center'});
+      if (warnMsg){
+        toast(warnMsg, true);
+        render();
+      } else {
+        state.selDate = null;
+        render();
+        var cal = document.querySelector('.day-grid');
+        if (cal) cal.scrollIntoView({behavior:'smooth', block:'center'});
+      }
     });
   });
 }
