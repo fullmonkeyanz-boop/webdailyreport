@@ -160,6 +160,7 @@ a{color:var(--accent)}
 .btn-row{display:flex;gap:8px;flex-wrap:wrap}
 
 .field{display:flex;flex-direction:column;gap:5px}
+.field[hidden]{display:none}
 .field label{font-size:12px;color:var(--text-muted);font-weight:600}
 .field input[type="text"],.field input[type="password"],.field input[type="number"],.field input[type="date"],.field select{
   border:1px solid var(--border-strong);border-radius:var(--radius-s);background:var(--surface-2);
@@ -322,6 +323,8 @@ var FIELD_DEFS = [
   {key:'travel', label:'勤務時間外往復', short:'往復'}
 ];
 var CARRY_KEYS = ['overtime','late','paidLeave','absence','holidayWork']; // 20日締めで繰越対象
+var ZATSUYOU_CODE = '0';   // 「雑用その他」選択時は作業内容を手入力できる
+var MAEYAMA_CODE = '00';   // ドロップダウンでは常に一番下に表示する
 
 /* ================= state ================= */
 var state = {
@@ -476,7 +479,7 @@ function sha256Hex(text){
 
 /* ================= db bootstrap ================= */
 var SEED_WORKERS = ['木村秀美','三好','大須賀','塩井','松村','矢嶋','樋笠正直','樋笠正道','樋笠幸三','木村勲','佐々木'];
-var SEED_ITEMS = [{code:'1',name:'工務一般'},{code:'0',name:'雑用'},{code:'00',name:'前山'}];
+var SEED_ITEMS = [{code:'1',name:'工務一般'},{code:'0',name:'雑用その他'},{code:'00',name:'前山'}];
 
 function initDb(){
   if (!FIREBASE_CONFIG || FIREBASE_CONFIG.apiKey === 'YOUR_API_KEY'){
@@ -535,6 +538,12 @@ function startListeners(db){
       });
     }
     state.workItems = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    // 「雑用」を「雑用その他」に1回だけ自動でリネーム(既存の登録データ向け)
+    var zatsuyou = state.workItems.find(function(w){ return w.code===ZATSUYOU_CODE && w.name==='雑用'; });
+    if (zatsuyou && !state._renamedZatsuyou){
+      state._renamedZatsuyou = true;
+      db.collection('workItems').doc(zatsuyou.id).update({name:'雑用その他'});
+    }
     render();
   });
 
@@ -861,6 +870,12 @@ function renderDayForm(dateStr){
   while (items.length < 3) items.push({code:'', hours:''});
 
   var itemOptions = activeWorkItems();
+  var maeyamaIdx = -1;
+  itemOptions.forEach(function(w,i){ if (w.code===MAEYAMA_CODE) maeyamaIdx = i; });
+  if (maeyamaIdx !== -1){
+    var maeyama = itemOptions.splice(maeyamaIdx,1)[0];
+    itemOptions.push(maeyama);
+  }
 
   var fieldsHtml = FIELD_DEFS.map(function(f){
     return (
@@ -876,11 +891,18 @@ function renderDayForm(dateStr){
       var label = w.code+' '+w.name+(w.contractor?'（'+w.contractor+'）':'');
       return '<option value="'+w.code+'" '+(it.code===w.code?'selected':'')+'>'+escapeHtml(label)+'</option>';
     }).join('');
+    var showNote = it.code === ZATSUYOU_CODE;
     return (
-      '<div class="item-row">' +
-        '<div class="field"><label>製番 '+(idx+1)+'</label><select data-item-code="'+idx+'">'+opts+'</select></div>' +
-        '<div class="field"><label>時間</label><input type="number" class="num-input" step="0.5" min="0" inputmode="decimal" data-item-hours="'+idx+'" value="'+(it.hours||'')+'"></div>' +
-        '<button class="btn btn-sm btn-ghost" data-act="clear-item" data-idx="'+idx+'" style="align-self:end;height:40px">✕</button>' +
+      '<div class="stack" style="gap:6px">' +
+        '<div class="item-row">' +
+          '<div class="field"><label>製番 '+(idx+1)+'</label><select data-item-code="'+idx+'">'+opts+'</select></div>' +
+          '<div class="field"><label>時間</label><input type="number" class="num-input" step="0.5" min="0" inputmode="decimal" data-item-hours="'+idx+'" value="'+(it.hours||'')+'"></div>' +
+          '<button class="btn btn-sm btn-ghost" data-act="clear-item" data-idx="'+idx+'" style="align-self:end;height:40px">✕</button>' +
+        '</div>' +
+        '<div class="field" data-item-note-wrap="'+idx+'"'+(showNote?'':' hidden')+'>' +
+          '<label>作業内容（手入力・任意）</label>' +
+          '<input type="text" data-item-note="'+idx+'" placeholder="例）〇〇清掃" value="'+escapeHtml(it.note||'')+'">' +
+        '</div>' +
       '</div>'
     );
   }).join('');
@@ -918,9 +940,15 @@ function readDayForm(){
   for (var i=0;i<3;i++){
     var codeEl = document.querySelector('[data-item-code="'+i+'"]');
     var hoursEl = document.querySelector('[data-item-hours="'+i+'"]');
+    var noteEl = document.querySelector('[data-item-note="'+i+'"]');
     var code = codeEl ? codeEl.value : '';
     var hours = hoursEl ? num(hoursEl.value) : 0;
-    if (code) items.push({code:code, hours:hours});
+    var note = noteEl ? noteEl.value.trim() : '';
+    if (code){
+      var itemObj = {code:code, hours:hours};
+      if (code === ZATSUYOU_CODE && note) itemObj.note = note;
+      items.push(itemObj);
+    }
   }
   day.items = items;
   return day;
@@ -1067,7 +1095,7 @@ function doExport(kind){
         var dateStr = ymd(y,m,d);
         var day = getDay(doc, d);
         var total = (day.total!==undefined)?day.total:computeTotal(dateStr,day);
-        var itemsText = (day.items||[]).map(function(it){ return it.code+':'+fmtHour(num(it.hours)); }).join('、');
+        var itemsText = (day.items||[]).map(function(it){ return it.code+(it.note?'('+it.note+')':'')+':'+fmtHour(num(it.hours)); }).join('、');
         rows.push([w.name, dateStr, DOW_LABELS[dowOf(dateStr)], isHoliday(dateStr)?'休日':'平日',
           fmtHour(day.paidLeave)||'', fmtHour(day.late), fmtHour(day.earlyLeave), fmtHour(day.absence),
           fmtHour(day.overtime), fmtHour(day.holidayWork), displayTotal(dateStr,day,total), itemsText, fmtHour(day.travel)]);
@@ -1320,6 +1348,8 @@ function bindInputView(){
       var hoursEl = document.querySelector('[data-item-hours="'+idx+'"]');
       if (el.value && hoursEl && !hoursEl.value){ hoursEl.value = 8; }
       if (!el.value && hoursEl){ hoursEl.value = ''; }
+      var noteWrap = document.querySelector('[data-item-note-wrap="'+idx+'"]');
+      if (noteWrap) noteWrap.hidden = (el.value !== ZATSUYOU_CODE);
       liveRecalc();
     });
   });
@@ -1328,8 +1358,12 @@ function bindInputView(){
       var idx = el.getAttribute('data-idx');
       var codeEl = document.querySelector('[data-item-code="'+idx+'"]');
       var hoursEl = document.querySelector('[data-item-hours="'+idx+'"]');
+      var noteEl = document.querySelector('[data-item-note="'+idx+'"]');
+      var noteWrap = document.querySelector('[data-item-note-wrap="'+idx+'"]');
       if (codeEl) codeEl.value = '';
       if (hoursEl) hoursEl.value = '';
+      if (noteEl) noteEl.value = '';
+      if (noteWrap) noteWrap.hidden = true;
       liveRecalc();
     });
   });
