@@ -1404,9 +1404,9 @@ function bindInputView(){
       }
     }
     state.dayWarnKeys = warnKeys;
+    // 入力中の値を消さないよう、再描画せずにハイライトだけその場で切り替える(まず全部解除)
+    document.querySelectorAll('[data-field-wrap]').forEach(function(w){ w.classList.remove('field-warn'); });
     if (warnMsg){
-      // 入力中の値を消さないよう、再描画せずにハイライトだけその場で切り替える
-      document.querySelectorAll('[data-field-wrap]').forEach(function(w){ w.classList.remove('field-warn'); });
       warnKeys.forEach(function(key){
         var wrap = document.querySelector('[data-field-wrap="'+key+'"]');
         if (wrap) wrap.classList.add('field-warn');
