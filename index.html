@@ -246,8 +246,9 @@ a{color:var(--accent)}
 /* ============ ledger table ============ */
 .table-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-s)}
 table.ledger{border-collapse:collapse;width:100%;min-width:560px;font-size:12.5px}
-table.ledger.ledger-compact{min-width:0}
-table.ledger.ledger-compact td:last-child,table.ledger.ledger-compact th:last-child{width:90px}
+table.ledger.ledger-compact{min-width:0;width:100%;table-layout:fixed}
+table.ledger.ledger-compact th:last-child,table.ledger.ledger-compact td:last-child{width:76px}
+table.ledger.ledger-compact th:first-child,table.ledger.ledger-compact td:first-child{white-space:normal;position:static;word-break:break-word}
 table.ledger th,table.ledger td{padding:8px 10px;text-align:right;border-bottom:1px solid var(--border);white-space:nowrap}
 table.ledger th:first-child,table.ledger td:first-child{text-align:left;position:sticky;left:0;background:var(--surface);font-weight:600}
 table.ledger thead th{background:var(--surface-2);color:var(--text-muted);font-weight:700;font-size:11px;letter-spacing:.02em}
