@@ -1018,6 +1018,7 @@ function renderSummaryView(){
           '<button class="btn" data-act="export-items">製番別集計をCSV出力</button>' +
         '</div>' +
       '</div>' +
+      renderSummaryDailyItems(cache,y,m) +
       '<div class="panel">' +
         '<div class="panel-head"><h2>20日締め集計</h2></div>' +
         '<p class="caption" style="margin-bottom:10px">対象期間　'+cutoffLabel+'（前月21日以降の早出残業・遅刻・有休・欠勤・休出の繰越を含む）</p>' +
@@ -1062,6 +1063,85 @@ function loadSummary(y,m){
   });
 }
 
+function computeMonthDayTotals(cache, y, m){
+  var dim = daysInMonth(y,m);
+  var totals = {};
+  for (var d=1; d<=dim; d++) totals[d] = 0;
+  cache.workers.forEach(function(w,i){
+    var doc = cache.docs[i][0];
+    for (var d=1; d<=dim; d++){
+      var dayData = getDay(doc, d);
+      (dayData.items||[]).forEach(function(it){
+        if (it.code) totals[d] += num(it.hours);
+      });
+    }
+  });
+  return totals;
+}
+function computeDayItemBreakdown(cache, d){
+  var groups = {}, order = [];
+  cache.workers.forEach(function(w,i){
+    var doc = cache.docs[i][0];
+    var dayData = getDay(doc, d);
+    (dayData.items||[]).forEach(function(it){
+      if (!it.code) return;
+      var key, label;
+      if (it.code === ZATSUYOU_CODE && it.note){
+        key = ZATSUYOU_CODE + '::' + it.note;
+        label = workItemLabel(it.code) + '（'+it.note+'）';
+      } else {
+        key = it.code;
+        label = workItemLabel(it.code);
+      }
+      if (!groups[key]){ groups[key] = {label:label, hours:0}; order.push(key); }
+      groups[key].hours += num(it.hours);
+    });
+  });
+  return order.map(function(k){ return groups[k]; }).sort(function(a,b){ return b.hours - a.hours; });
+}
+function renderSummaryDailyItems(cache, y, m){
+  var dim = daysInMonth(y,m);
+  var firstDow = dowOf(ymd(y,m,1));
+  var selDay = state.summaryDetailDate;
+  var dayTotals = computeMonthDayTotals(cache, y, m);
+
+  var cells = '';
+  for (var i=0;i<firstDow;i++) cells += '<div class="day-cell off"></div>';
+  for (var d=1; d<=dim; d++){
+    var dateStr = ymd(y,m,d);
+    var total = dayTotals[d] || 0;
+    var hasEntry = total > 0;
+    var cls = 'day-cell';
+    if (isHoliday(dateStr)) cls += ' holiday';
+    if (d === selDay) cls += ' selected';
+    if (hasEntry) cls += ' has-entry';
+    cells += '<div class="'+cls+'" data-sum-day="'+d+'"><span class="dnum">'+d+'</span>' +
+      (hasEntry ? '<span class="dhour">'+fmtHour(total)+'</span>' : '') + '</div>';
+  }
+  var dowRow = DOW_LABELS.map(function(l){ return '<div class="dow">'+l+'</div>'; }).join('');
+
+  var detailHtml = '';
+  if (selDay){
+    var breakdown = computeDayItemBreakdown(cache, selDay);
+    var rows = breakdown.length ? breakdown.map(function(g){
+      return '<tr><td>'+escapeHtml(g.label)+'</td><td>'+fmtHour(g.hours)+'</td></tr>';
+    }).join('') : '<tr><td colspan="2" class="caption">この日の製番・作業内容の入力はありません</td></tr>';
+    detailHtml = (
+      '<hr class="divider" style="margin:14px 0">' +
+      '<div class="eyebrow" style="margin-bottom:8px">'+m+'月'+selDay+'日の製番別集計（全作業者）</div>' +
+      '<div class="table-scroll"><table class="ledger"><thead><tr><th>製番・作業内容</th><th>時間(h)</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    );
+  }
+
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>日別・製番別集計</h2></div>' +
+      '<p class="caption" style="margin-bottom:10px">日付を選ぶと、その日の製番・作業内容ごとの合計時間（全作業者分）を表示します。雑用その他は、手入力の内容がある場合は内容ごとに分けて、ない場合はまとめて集計します。</p>' +
+      '<div class="day-grid">' + dowRow + cells + '</div>' +
+      detailHtml +
+    '</div>'
+  );
+}
 function downloadCsv(filename, text){
   var blob = new Blob([text], {type: 'text/csv;charset=utf-8;'});
   var url = URL.createObjectURL(blob);
@@ -1436,12 +1516,20 @@ function bindInputView(){
 function bindSummaryView(){
   var p = document.querySelector('[data-act="sum-prev"]');
   var n = document.querySelector('[data-act="sum-next"]');
-  if (p) p.addEventListener('click', function(){ state.summaryYM = prevMonth(state.summaryYM.y, state.summaryYM.m); render(); });
-  if (n) n.addEventListener('click', function(){ state.summaryYM = nextMonth(state.summaryYM.y, state.summaryYM.m); render(); });
+  if (p) p.addEventListener('click', function(){ state.summaryYM = prevMonth(state.summaryYM.y, state.summaryYM.m); state.summaryDetailDate = null; render(); });
+  if (n) n.addEventListener('click', function(){ state.summaryYM = nextMonth(state.summaryYM.y, state.summaryYM.m); state.summaryDetailDate = null; render(); });
 
   [['export-calendar','calendar'],['export-cutoff','cutoff'],['export-daily','daily'],['export-items','items']].forEach(function(pair){
     var el = document.querySelector('[data-act="'+pair[0]+'"]');
     if (el) el.addEventListener('click', function(){ doExport(pair[1]); });
+  });
+
+  document.querySelectorAll('[data-sum-day]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var d = +el.getAttribute('data-sum-day');
+      state.summaryDetailDate = (state.summaryDetailDate === d) ? null : d;
+      render();
+    });
   });
 }
 
