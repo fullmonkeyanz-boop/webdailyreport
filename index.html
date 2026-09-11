@@ -172,6 +172,15 @@ a{color:var(--accent)}
 .field-row{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .num-input{font-family:var(--font-mono);text-align:right}
 
+.check-grid{display:flex;flex-wrap:wrap;gap:6px 14px;padding:9px 10px;border:1px solid var(--border-strong);border-radius:var(--radius-s);background:var(--surface-2)}
+.check-item{display:inline-flex;align-items:center;gap:5px;font-size:13px}
+.check-item input{width:16px;height:16px;flex-shrink:0}
+.travel-row{border:1px solid var(--border);border-radius:var(--radius-s);padding:10px;display:flex;flex-direction:column;gap:4px}
+.travel-row .trow-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-weight:700}
+.travel-row .trow-amount{font-family:var(--font-mono)}
+.travel-row .trow-sub{font-size:12.5px;color:var(--text-muted)}
+.travel-row .trow-btns{display:flex;gap:8px;margin-top:4px}
+
 .chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}
 .chip-amber{background:var(--amber-soft);color:var(--amber)}
 .chip-red{background:var(--red-soft);color:var(--red)}
@@ -293,6 +302,7 @@ footer.app-footer p{font-size:11px;color:var(--text-faint)}
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 
 <script>
 /* ================= ここをご自身のFirebase設定に書き換えてください ================= */
@@ -316,9 +326,17 @@ var DOW_LABELS = ['日','月','火','水','木','金','土'];
 var SALT = 'seiban-nippou-v1::';
 var TABS = [
   {id:'input', label:'入力'},
-  {id:'summary', label:'集計'},
+  {id:'travel', label:'旅費交通費精算'},
   {id:'master', label:'マスター'}
 ];
+var TRAVEL_SUMMARY_OPTIONS = ['戸当り仮組','戸当り据付','扉体据付','扉体撤去','配送','納品','検査'];
+var TRAVEL_WORKERS = ['塩井','大須賀','樋笠正直','樋笠正道','樋笠幸三','木村勲'];
+var TRAVEL_DEFAULT_STAFF = '塩井哲也';
+var TRAVEL_SITE_WORK_CONTENT = ['撤去','組込','据付','運送','現場下見','他'];
+var TRAVEL_SITE_STAFF_OPTIONS = ['塩井','木村勲','樋笠幸三','松村'];
+var TRAVEL_LUNCH_IN = 500;   // 昼食代補助・県内
+var TRAVEL_LUNCH_OUT = 1000; // 昼食代補助・県外
+var TRAVEL_DINNER = 2000;    // 夕食代補助（宿泊時）
 var FIELD_DEFS = [
   {key:'paidLeave', label:'有休', short:'有休'},
   {key:'late', label:'遅刻', short:'遅刻'},
@@ -351,7 +369,30 @@ var state = {
   monthDoc: null,    // current worker/month doc data {days:{...}}
   monthDocUnsub: null,
   adminUnlocked: false,
-  masterSection: 'workers'
+  masterSection: 'workers',
+  travelYM: null,      // {y,m} for 旅費交通費精算 view
+  travelHeader: null,  // {staffName, prevBalance, advance}
+  travelRows: [],       // [{id,date,itemCode,siteName,contractors,workers,summary,store,amount,mealArea,mealDinner}]
+  travelHeaderUnsub: null,
+  travelRowsUnsub: null,
+  travelEditId: null,   // 編集中の行id（nullなら新規追加モード）
+  travelPrevCarryDefault: null, // 前月の次月繰越金額（前月仮払残金額の初期値として使用）
+
+  travelSection: 'monthly', // 'monthly' | 'site'
+  travelSiteList: [],
+  travelSiteListUnsub: null,
+  travelSiteCurrentId: null, // 開いている現場単位精算書のid（nullなら一覧表示）
+  travelSiteDoc: null,
+  travelSiteDocUnsub: null,
+  travelSitePurchases: [],
+  travelSitePurchasesUnsub: null,
+  travelSiteHospitality: [],
+  travelSiteHospitalityUnsub: null,
+  travelSiteAllowances: [],
+  travelSiteAllowancesUnsub: null,
+  travelSiteEditPurchaseId: null,
+  travelSiteEditHospitalityId: null,
+  travelSiteEditAllowanceId: null
 };
 
 function todayParts(){
@@ -677,6 +718,7 @@ function render(){
 
   var html = renderTopbar();
   if (state.view === 'input') html += renderInputView();
+  else if (state.view === 'travel') html += renderTravelView();
   else if (state.view === 'summary') html += renderSummaryView();
   else html += renderMasterView();
   html += renderFooter();
@@ -742,7 +784,7 @@ function bindGate(){
 function renderTopbar(){
   var whoHtml = '';
   if (state.workerId){
-    whoHtml = '<div class="who"><span class="who-name">' + escapeHtml(workerName(state.workerId)) + 'さん</span><button data-act="switch-worker">変更</button></div>';
+    whoHtml = '<div class="who"><span class="who-name">' + escapeHtml(workerName(state.workerId)) + 'さん</span><button data-act="switch-worker">戻る</button></div>';
   }
   var tabsHtml = TABS.map(function(t){
     return '<button class="tab" data-tab="'+t.id+'" aria-selected="'+(state.view===t.id)+'">'+t.label+'</button>';
@@ -761,10 +803,11 @@ function renderFooter(){
   return '<footer class="app-footer"><p>締め日20日 ／ 勤務時間は製番・作業内容に入力された時間の合計</p></footer>';
 }
 function bindTopbar(){
-  document.querySelectorAll('.tab').forEach(function(el){
+  document.querySelectorAll('.topbar .tab').forEach(function(el){
     el.addEventListener('click', function(){
       state.view = el.getAttribute('data-tab');
       if (state.view === 'input' && state.workerId){ ensureInputYM(); subscribeMonthDoc(); }
+      if (state.view === 'travel'){ ensureTravelYM(); subscribeTravelMonth(); }
       render();
     });
   });
@@ -981,7 +1024,7 @@ function renderSummaryView(){
   if (!state._summaryCache || state._summaryCache.key !== (y+'-'+m)){
     loadSummary(y,m);
     return (
-      '<div class="view stack">' +
+      '<div class="stack">' +
         renderSummaryMonthNav(y,m) +
         '<div class="panel"><p class="caption">集計を読み込んでいます…</p></div>' +
       '</div>'
@@ -1007,7 +1050,7 @@ function renderSummaryView(){
   }).join('');
 
   return (
-    '<div class="view stack">' +
+    '<div class="stack">' +
       renderSummaryMonthNav(y,m) +
       '<div class="panel">' +
         '<div class="panel-head"><h2>暦月集計（'+y+'年'+m+'月 1日〜末日）</h2></div>' +
@@ -1217,6 +1260,1048 @@ function doExport(kind){
   }
 }
 
+/* ================= TRAVEL EXPENSE (旅費交通費精算) ================= */
+function goToInputTop(){
+  state.view = 'input';
+  if (state.workerId){ ensureInputYM(); subscribeMonthDoc(); }
+  render();
+}
+function ensureTravelYM(){
+  if (!state.travelYM) state.travelYM = {y:TODAY.y, m:TODAY.m};
+}
+function travelMonthKey(y,m){ return yyyymm(y,m); }
+function unsubscribeTravel(){
+  if (state.travelHeaderUnsub){ state.travelHeaderUnsub(); state.travelHeaderUnsub = null; }
+  if (state.travelRowsUnsub){ state.travelRowsUnsub(); state.travelRowsUnsub = null; }
+}
+function subscribeTravelMonth(){
+  unsubscribeTravel();
+  state.travelHeader = null;
+  state.travelRows = [];
+  state.travelEditId = null;
+  state.travelPrevCarryDefault = null;
+  if (!state.db || !state.travelYM){ render(); return; }
+  var key = travelMonthKey(state.travelYM.y, state.travelYM.m);
+  state.travelHeaderUnsub = state.db.doc('travelExpenses/'+key).onSnapshot(function(snap){
+    state.travelHeader = snap.exists ? snap.data() : {};
+    render();
+  });
+  state.travelRowsUnsub = state.db.collection('travelExpenses/'+key+'/rows').orderBy('date').onSnapshot(function(snap){
+    state.travelRows = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    render();
+  });
+  loadTravelPrevCarry(state.travelYM.y, state.travelYM.m);
+}
+function loadTravelPrevCarry(y, m){
+  if (!state.db) return;
+  var pm = prevMonth(y, m);
+  var key = travelMonthKey(pm.y, pm.m);
+  Promise.all([
+    state.db.doc('travelExpenses/'+key).get(),
+    state.db.collection('travelExpenses/'+key+'/rows').get()
+  ]).then(function(results){
+    // 別の月へ移動済みなら破棄
+    if (!state.travelYM || state.travelYM.y !== y || state.travelYM.m !== m) return;
+    var headerSnap = results[0], rowsSnap = results[1];
+    var h = headerSnap.exists ? headerSnap.data() : {};
+    var prevBalance = num(h.prevBalance);
+    var advance = num(h.advance);
+    var rowsTotal = rowsSnap.docs.reduce(function(s,d){ return s + travelRowTotal(d.data()); }, 0);
+    state.travelPrevCarryDefault = prevBalance + advance - rowsTotal;
+    render();
+  }).catch(function(){ /* 前月データなしなど。既定値0のままにする */ });
+}
+function travelRowMealAmount(row){
+  if (!row) return 0;
+  return travelAllowanceAmount({area: row.mealArea, dinner: row.mealDinner, workers: row.workers});
+}
+function travelRowTotal(row){
+  return num(row.amount) + travelRowMealAmount(row);
+}
+function distinctContractors(){
+  var seen = {}, list = [];
+  activeWorkItems().forEach(function(it){
+    var c = (it.contractor||'').trim();
+    if (c && !seen[c]){ seen[c] = true; list.push(c); }
+  });
+  return list;
+}
+function travelHeaderField(key, fallback){
+  var h = state.travelHeader || {};
+  return (h[key]!==undefined && h[key]!==null && h[key]!=='') ? h[key] : fallback;
+}
+function saveTravelHeader(patch){
+  if (!state.db || !state.travelYM) return;
+  var key = travelMonthKey(state.travelYM.y, state.travelYM.m);
+  state.db.doc('travelExpenses/'+key).set(patch, {merge:true});
+}
+function renderTravelMonthNav(y,m){
+  return (
+    '<div class="panel">' +
+      '<div class="month-nav">' +
+        '<button class="icon-btn" data-act="t-prev">‹</button>' +
+        '<span class="label">'+y+'年 '+m+'月 旅費交通費精算</span>' +
+        '<button class="icon-btn" data-act="t-next">›</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function renderTravelView(){
+  var tabsHtml = [['monthly','月単位'],['site','現場単位']].map(function(t){
+    return '<button class="tab" data-tsec="'+t[0]+'" aria-selected="'+(state.travelSection===t[0])+'">'+t[1]+'</button>';
+  }).join('');
+  var body = state.travelSection === 'site' ? renderTravelSiteView() : renderTravelMonthlyView();
+  return (
+    '<div class="stack">' +
+      '<div class="panel" style="padding:6px"><div class="tabs">'+tabsHtml+'</div></div>' +
+      body +
+    '</div>'
+  );
+}
+function renderTravelMonthlyView(){
+  ensureTravelYM();
+  var y = state.travelYM.y, m = state.travelYM.m;
+  if (!state.db || state.travelHeader === null){
+    return (
+      '<div class="stack">' + renderTravelMonthNav(y,m) +
+        '<div class="panel"><p class="caption">読み込んでいます…</p></div>' +
+      '</div>'
+    );
+  }
+
+  var staffName = travelHeaderField('staffName', TRAVEL_DEFAULT_STAFF);
+  var settleDate = travelHeaderField('settleDate','');
+  var prevCarryDefault = (state.travelPrevCarryDefault!==null && state.travelPrevCarryDefault!==undefined) ? state.travelPrevCarryDefault : 0;
+  var prevBalance = num(travelHeaderField('prevBalance', prevCarryDefault));
+  var advance = num(travelHeaderField('advance',0));
+  var rows = state.travelRows;
+  var total = rows.reduce(function(s,r){ return s + travelRowTotal(r); }, 0);
+  var carry = prevBalance + advance - total;
+
+  var contractors = distinctContractors();
+  var workers = TRAVEL_WORKERS;
+  var editRow = state.travelEditId ? rows.find(function(r){ return r.id === state.travelEditId; }) : null;
+
+  var itemOptionsHtml = '<option value="">（任意・選ぶと現場名/請負会社を自動入力）</option>' + activeWorkItems().map(function(it){
+    return '<option value="'+escapeHtml(it.code)+'">'+escapeHtml(it.code+' '+it.name+(it.contractor?'（'+it.contractor+'）':''))+'</option>';
+  }).join('');
+
+  var contractorChecks = contractors.length ? contractors.map(function(c){
+    var checked = editRow ? (editRow.contractors||[]).indexOf(c)!==-1 : false;
+    return '<label class="check-item"><input type="checkbox" data-tcheck="contractor" value="'+escapeHtml(c)+'"'+(checked?' checked':'')+'>'+escapeHtml(c)+'</label>';
+  }).join('') : '<span class="caption">マスター＞作業内容(製番)で請負会社が未登録です</span>';
+
+  var workerChecks = workers.map(function(w){
+    var checked = editRow ? (editRow.workers||[]).indexOf(w)!==-1 : false;
+    return '<label class="check-item"><input type="checkbox" data-tcheck="worker" value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
+  }).join('');
+
+  var summaryChecks = TRAVEL_SUMMARY_OPTIONS.map(function(s){
+    var checked = editRow ? (editRow.summary||[]).indexOf(s)!==-1 : false;
+    return '<label class="check-item"><input type="checkbox" data-tcheck="summary" value="'+escapeHtml(s)+'"'+(checked?' checked':'')+'>'+escapeHtml(s)+'</label>';
+  }).join('');
+
+  var defaultDate = editRow ? editRow.date : ymd(y,m, Math.min(TODAY.d, daysInMonth(y,m)));
+
+  var mealAreaOut = !!(editRow && editRow.mealArea==='out');
+  var mealAreaIn = !mealAreaOut;
+  var mealDinner = !!(editRow && editRow.mealDinner);
+
+  var rowsHtml = rows.length ? rows.map(function(r){
+    var mealAmt = travelRowMealAmount(r);
+    var mealNote = mealAmt ? ('　（うち昼食・夕食代補助：¥'+mealAmt.toLocaleString()+'／'+(r.mealArea==='out'?'県外':'県内')+(r.mealDinner?'＋夕食':'')+'）') : '';
+    return (
+      '<div class="travel-row">' +
+        '<div class="trow-top"><span>'+escapeHtml(r.date||'')+'</span><span class="trow-amount">¥'+travelRowTotal(r).toLocaleString()+'</span></div>' +
+        '<div class="trow-sub">請負会社：'+escapeHtml((r.contractors||[]).join('／')||'－')+'</div>' +
+        '<div class="trow-sub">現場名：'+escapeHtml(r.siteName||'－')+'</div>' +
+        '<div class="trow-sub">購入品：'+escapeHtml(r.store||'－')+'　¥'+num(r.amount).toLocaleString()+'</div>' +
+        '<div class="trow-sub">作業者：'+escapeHtml((r.workers||[]).join('／')||'－')+'</div>' +
+        '<div class="trow-sub">摘要：'+escapeHtml((r.summary||[]).join('／')||'－')+mealNote+'</div>' +
+        '<div class="trow-btns">' +
+          '<button class="btn btn-sm" data-tedit="'+r.id+'">編集</button>' +
+          '<button class="btn btn-sm btn-danger" data-tdel="'+r.id+'">削除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('') : '<p class="caption">この月の明細はまだありません</p>';
+
+  return (
+    '<div class="stack">' +
+      renderTravelMonthNav(y,m) +
+      '<div class="panel">' +
+        '<div class="field-row">' +
+          '<div class="field"><label>担当者名</label><input type="text" id="tStaffName" value="'+escapeHtml(staffName)+'"></div>' +
+          '<div class="field"><label>精算日</label><input type="date" id="tSettleDate" value="'+escapeHtml(settleDate)+'"></div>' +
+        '</div>' +
+        '<div class="field-row" style="margin-top:10px">' +
+          '<div class="field"><label>前月仮払残金額</label><input type="number" class="num-input" id="tPrevBalance" value="'+prevBalance+'"></div>' +
+          '<div class="field"><label>今月仮払金額</label><input type="number" class="num-input" id="tAdvance" value="'+advance+'"></div>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>'+(editRow?'明細を編集':'明細を追加')+'</h2></div>' +
+        '<div class="stack" style="gap:10px">' +
+          '<div class="field"><label>日付</label><input type="date" id="tDate" value="'+escapeHtml(defaultDate)+'"></div>' +
+          '<div class="field"><label>製番（入力補助・任意／出力時は含まれません）</label><select id="tItemSelect">'+itemOptionsHtml+'</select></div>' +
+          '<div class="field"><label>現場名</label><input type="text" id="tSiteName" value="'+escapeHtml(editRow?(editRow.siteName||''):'')+'" placeholder="製番未選択の場合は請負会社と場所名を入力"></div>' +
+          '<div class="field"><label>請負会社（複数選択可）</label><div class="check-grid">'+contractorChecks+'</div></div>' +
+          '<div class="field"><label>作業者（複数選択可）</label><div class="check-grid">'+workerChecks+'</div></div>' +
+          '<div class="field"><label>摘要（複数選択可）</label><div class="check-grid">'+summaryChecks+'</div></div>' +
+          '<div class="field">' +
+            '<label>昼食・夕食代補助（上記の作業者×各補助額で自動計算）</label>' +
+            '<div class="check-grid">' +
+              '<label class="check-item"><input type="radio" name="tMealArea" value="in"'+(mealAreaIn?' checked':'')+'>県内（¥'+TRAVEL_LUNCH_IN+'）</label>' +
+              '<label class="check-item"><input type="radio" name="tMealArea" value="out"'+(mealAreaOut?' checked':'')+'>県外（¥'+TRAVEL_LUNCH_OUT+'）</label>' +
+            '</div>' +
+            '<div class="check-grid" style="margin-top:8px"><label class="check-item"><input type="checkbox" id="tMealDinner"'+(mealDinner?' checked':'')+'>宿泊して夕食代補助（＋¥'+TRAVEL_DINNER+'）を追加する</label></div>' +
+          '</div>' +
+          '<div class="field">' +
+            '<label>購入品</label>' +
+            '<div class="field-row">' +
+              '<div class="field"><label>店名</label><input type="text" id="tStore" value="'+escapeHtml(editRow?(editRow.store||''):'')+'" placeholder="店名を入力"></div>' +
+              '<div class="field"><label>金額</label><input type="number" class="num-input" id="tAmount" value="'+(editRow?num(editRow.amount):'')+'" placeholder="0"></div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="btn-row" style="margin-top:12px">' +
+          (editRow ? '<button class="btn btn-ghost" data-act="t-cancel-edit">キャンセル</button>' : '') +
+          '<button class="btn btn-primary" data-act="t-save-row" style="flex:1">'+(editRow?'更新する':'追加する')+'</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>'+y+'年'+m+'月の明細（'+rows.length+'件）</h2></div>' +
+        '<div class="stack" style="gap:8px">'+rowsHtml+'</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<div class="field-row">' +
+          '<div class="field"><label>今月計</label><input type="text" value="¥'+total.toLocaleString()+'" disabled></div>' +
+          '<div class="field"><label>次月繰越金額</label><input type="text" value="¥'+carry.toLocaleString()+'" disabled></div>' +
+        '</div>' +
+        '<div class="btn-row" style="margin-top:12px">' +
+          '<button class="btn" data-act="t-export">Excelで出力</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<div class="btn-row">' +
+          '<button class="btn btn-primary" data-act="t-close" style="flex:1">閉じる</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function bindTravelView(){
+  document.querySelectorAll('[data-tsec]').forEach(function(el){
+    el.addEventListener('click', function(){
+      state.travelSection = el.getAttribute('data-tsec');
+      if (state.travelSection === 'site') ensureTravelSiteList();
+      render();
+    });
+  });
+  if (state.travelSection === 'site') bindTravelSiteView();
+  else bindTravelMonthlyView();
+}
+function bindTravelMonthlyView(){
+  var p = document.querySelector('[data-act="t-prev"]');
+  var n = document.querySelector('[data-act="t-next"]');
+  if (p) p.addEventListener('click', function(){ state.travelYM = prevMonth(state.travelYM.y, state.travelYM.m); subscribeTravelMonth(); render(); });
+  if (n) n.addEventListener('click', function(){ state.travelYM = nextMonth(state.travelYM.y, state.travelYM.m); subscribeTravelMonth(); render(); });
+
+  var closeBtn = document.querySelector('[data-act="t-close"]');
+  if (closeBtn) closeBtn.addEventListener('click', function(){ goToInputTop(); });
+
+  var staffEl = document.getElementById('tStaffName');
+  if (staffEl) staffEl.addEventListener('change', function(){ saveTravelHeader({staffName: staffEl.value}); });
+  var settleEl = document.getElementById('tSettleDate');
+  if (settleEl) settleEl.addEventListener('change', function(){ saveTravelHeader({settleDate: settleEl.value}); });
+  var prevBalEl = document.getElementById('tPrevBalance');
+  if (prevBalEl) prevBalEl.addEventListener('change', function(){ saveTravelHeader({prevBalance: num(prevBalEl.value)}); });
+  var advEl = document.getElementById('tAdvance');
+  if (advEl) advEl.addEventListener('change', function(){ saveTravelHeader({advance: num(advEl.value)}); });
+
+  var itemSel = document.getElementById('tItemSelect');
+  if (itemSel) itemSel.addEventListener('change', function(){
+    var code = itemSel.value;
+    if (!code) return;
+    var it = state.workItems.find(function(x){ return x.code === code; });
+    if (!it) return;
+    var siteEl = document.getElementById('tSiteName');
+    if (siteEl) siteEl.value = it.name || '';
+    if (it.contractor){
+      document.querySelectorAll('input[data-tcheck="contractor"]').forEach(function(b){
+        if (b.value === it.contractor) b.checked = true;
+      });
+    }
+  });
+
+  var cancelBtn = document.querySelector('[data-act="t-cancel-edit"]');
+  if (cancelBtn) cancelBtn.addEventListener('click', function(){ state.travelEditId = null; render(); });
+
+  var saveBtn = document.querySelector('[data-act="t-save-row"]');
+  if (saveBtn) saveBtn.addEventListener('click', saveTravelRow);
+
+  document.querySelectorAll('[data-tedit]').forEach(function(el){
+    el.addEventListener('click', function(){ state.travelEditId = el.getAttribute('data-tedit'); render(); });
+  });
+  document.querySelectorAll('[data-tdel]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-tdel');
+      confirmModal('削除しますか', 'この明細を削除します。元に戻せません。', function(){ deleteTravelRow(id); });
+    });
+  });
+
+  var exportBtn = document.querySelector('[data-act="t-export"]');
+  if (exportBtn) exportBtn.addEventListener('click', exportTravelExcel);
+}
+function saveTravelRow(){
+  if (!state.db || !state.travelYM) return;
+  var dateEl = document.getElementById('tDate');
+  var date = dateEl ? dateEl.value : '';
+  var siteName = (document.getElementById('tSiteName')||{}).value || '';
+  siteName = siteName.trim();
+  var itemCode = (document.getElementById('tItemSelect')||{}).value || '';
+  var store = ((document.getElementById('tStore')||{}).value || '').trim();
+  var amount = num((document.getElementById('tAmount')||{}).value);
+  var contractors = Array.from(document.querySelectorAll('input[data-tcheck="contractor"]:checked')).map(function(b){ return b.value; });
+  var workers = Array.from(document.querySelectorAll('input[data-tcheck="worker"]:checked')).map(function(b){ return b.value; });
+  var summary = Array.from(document.querySelectorAll('input[data-tcheck="summary"]:checked')).map(function(b){ return b.value; });
+  var mealAreaEl = document.querySelector('input[name="tMealArea"]:checked');
+  var mealArea = mealAreaEl ? mealAreaEl.value : 'in';
+  var mealDinner = !!(document.getElementById('tMealDinner')||{}).checked;
+  var mealAmount = travelAllowanceAmount({area:mealArea, dinner:mealDinner, workers:workers});
+
+  if (!date){ toast('日付を入力してください', true); return; }
+  var dupExists = state.travelRows.some(function(r){ return r.date === date && r.id !== state.travelEditId; });
+  if (dupExists){ toast('同じ日付が既に登録されています。登録日をご確認ください', true); return; }
+  if (!amount && !mealAmount){ toast('金額を入力してください', true); return; }
+
+  var data = {date:date, itemCode:itemCode, siteName:siteName, contractors:contractors, workers:workers, summary:summary, store:store, amount:amount, mealArea:mealArea, mealDinner:mealDinner, updatedAt:Date.now()};
+  var key = travelMonthKey(state.travelYM.y, state.travelYM.m);
+  var col = state.db.collection('travelExpenses/'+key+'/rows');
+  var isEdit = !!state.travelEditId;
+  var p = isEdit
+    ? col.doc(state.travelEditId).set(data, {merge:true})
+    : col.add(Object.assign({createdAt:Date.now()}, data));
+
+  p.then(function(){
+    state.travelEditId = null;
+    toast(isEdit ? '更新しました' : '追加しました');
+    render();
+  }).catch(function(){ toast('保存に失敗しました', true); });
+}
+function deleteTravelRow(id){
+  if (!state.db || !state.travelYM) return;
+  var key = travelMonthKey(state.travelYM.y, state.travelYM.m);
+  state.db.collection('travelExpenses/'+key+'/rows').doc(id).delete().then(function(){
+    toast('削除しました');
+  }).catch(function(){ toast('削除に失敗しました', true); });
+}
+var THIN_BORDER = {top:{style:'thin'}, left:{style:'thin'}, bottom:{style:'thin'}, right:{style:'thin'}};
+function applyBorder(ws, r1, c1, r2, c2){
+  for (var r=r1; r<=r2; r++){
+    for (var c=c1; c<=c2; c++){
+      ws.getCell(r,c).border = THIN_BORDER;
+    }
+  }
+}
+function headerFill(ws, r1, c1, r2, c2){
+  for (var r=r1; r<=r2; r++){
+    for (var c=c1; c<=c2; c++){
+      ws.getCell(r,c).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0F0F0'}};
+    }
+  }
+}
+function downloadWorkbook(wb, filename){
+  wb.xlsx.writeBuffer().then(function(buffer){
+    var blob = new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    toast('Excelをダウンロードしました');
+  }).catch(function(){ toast('Excel出力に失敗しました', true); });
+}
+function exportTravelExcel(){
+  if (typeof ExcelJS === 'undefined'){ toast('Excel出力ライブラリの読み込みに失敗しました', true); return; }
+  var y = state.travelYM.y, m = state.travelYM.m;
+  var staffName = travelHeaderField('staffName', TRAVEL_DEFAULT_STAFF);
+  var prevCarryDefault = (state.travelPrevCarryDefault!==null && state.travelPrevCarryDefault!==undefined) ? state.travelPrevCarryDefault : 0;
+  var prevBalance = num(travelHeaderField('prevBalance', prevCarryDefault));
+  var advance = num(travelHeaderField('advance',0));
+  var rows = state.travelRows.slice().sort(function(a,b){ return (a.date||'') < (b.date||'') ? -1 : 1; });
+  var total = rows.reduce(function(s,r){ return s + travelRowTotal(r); }, 0);
+  var carry = prevBalance + advance - total;
+
+  var wb = new ExcelJS.Workbook();
+  var ws = wb.addWorksheet(y+'年'+m+'月');
+  ws.columns = [{width:12},{width:22},{width:20},{width:22},{width:18},{width:24},{width:12},{width:16}];
+
+  ws.mergeCells(1,1,1,8);
+  ws.getCell(1,1).value = m+'月分 旅費交通費精算書';
+  ws.getCell(1,1).font = {bold:true, size:14};
+
+  ws.getCell(2,1).value = '担当者名'; ws.getCell(2,1).font = {bold:true};
+  ws.getCell(2,2).value = staffName;
+  ws.getCell(2,4).value = '前月仮払残金額'; ws.getCell(2,4).font = {bold:true};
+  ws.getCell(2,5).value = prevBalance;
+  ws.getCell(3,4).value = '今月仮払金額'; ws.getCell(3,4).font = {bold:true};
+  ws.getCell(3,5).value = advance;
+  applyBorder(ws, 2, 1, 3, 5);
+
+  var headerRowIdx = 5;
+  ws.getRow(headerRowIdx).values = ['日付','請負会社','現場名','作業者','店名','摘要','金額','昼食・夕食代補助'];
+  ws.getRow(headerRowIdx).font = {bold:true};
+  headerFill(ws, headerRowIdx, 1, headerRowIdx, 8);
+
+  var r = headerRowIdx;
+  rows.forEach(function(row){
+    r++;
+    ws.getRow(r).values = [row.date||'', (row.contractors||[]).join('／'), row.siteName||'', (row.workers||[]).join('／'), row.store||'', (row.summary||[]).join('／'), num(row.amount), travelRowMealAmount(row)];
+  });
+  applyBorder(ws, headerRowIdx, 1, r, 8);
+
+  var totalsRow1 = r + 2;
+  ws.getCell(totalsRow1,7).value = '今月計'; ws.getCell(totalsRow1,7).font = {bold:true};
+  ws.getCell(totalsRow1,8).value = total;
+  var totalsRow2 = totalsRow1 + 1;
+  ws.getCell(totalsRow2,7).value = '次月繰越金額'; ws.getCell(totalsRow2,7).font = {bold:true};
+  ws.getCell(totalsRow2,8).value = carry;
+  applyBorder(ws, totalsRow1, 7, totalsRow2, 8);
+
+  downloadWorkbook(wb, '旅費交通費精算_'+y+pad2(m)+'.xlsx');
+}
+
+/* ================= TRAVEL EXPENSE - SITE UNIT (現場単位) ================= */
+function ensureTravelSiteList(){
+  if (state.travelSiteListUnsub || !state.db) return;
+  state.travelSiteListUnsub = state.db.collection('travelSiteExpenses').orderBy('updatedAt','desc').limit(200).onSnapshot(function(snap){
+    state.travelSiteList = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    render();
+  });
+}
+function unsubscribeTravelSiteDetail(){
+  [state.travelSiteDocUnsub, state.travelSitePurchasesUnsub, state.travelSiteHospitalityUnsub, state.travelSiteAllowancesUnsub].forEach(function(u){ if (u) u(); });
+  state.travelSiteDocUnsub = null;
+  state.travelSitePurchasesUnsub = null;
+  state.travelSiteHospitalityUnsub = null;
+  state.travelSiteAllowancesUnsub = null;
+}
+function subscribeTravelSiteDetail(id){
+  unsubscribeTravelSiteDetail();
+  state.travelSiteDoc = null;
+  state.travelSitePurchases = [];
+  state.travelSiteHospitality = [];
+  state.travelSiteAllowances = [];
+  state.travelSiteEditPurchaseId = null;
+  state.travelSiteEditHospitalityId = null;
+  state.travelSiteEditAllowanceId = null;
+  if (!state.db || !id){ render(); return; }
+  state.travelSiteDocUnsub = state.db.doc('travelSiteExpenses/'+id).onSnapshot(function(snap){
+    state.travelSiteDoc = snap.exists ? snap.data() : {};
+    render();
+  });
+  state.travelSitePurchasesUnsub = state.db.collection('travelSiteExpenses/'+id+'/purchases').orderBy('date').onSnapshot(function(snap){
+    state.travelSitePurchases = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    render();
+  });
+  state.travelSiteHospitalityUnsub = state.db.collection('travelSiteExpenses/'+id+'/hospitality').orderBy('date').onSnapshot(function(snap){
+    state.travelSiteHospitality = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    render();
+  });
+  state.travelSiteAllowancesUnsub = state.db.collection('travelSiteExpenses/'+id+'/allowances').orderBy('date').onSnapshot(function(snap){
+    state.travelSiteAllowances = snap.docs.map(function(d){ return Object.assign({id:d.id}, d.data()); });
+    render();
+  });
+}
+function travelSiteField(key, fallback){
+  var h = state.travelSiteDoc || {};
+  return (h[key]!==undefined && h[key]!==null && h[key]!=='') ? h[key] : fallback;
+}
+function saveTravelSiteHeader(patch){
+  if (!state.db || !state.travelSiteCurrentId) return;
+  patch = Object.assign({}, patch, {updatedAt: Date.now()});
+  state.db.doc('travelSiteExpenses/'+state.travelSiteCurrentId).set(patch, {merge:true});
+}
+function travelAllowanceAmount(a){
+  var perWorker = (a.area==='out' ? TRAVEL_LUNCH_OUT : TRAVEL_LUNCH_IN) + (a.dinner ? TRAVEL_DINNER : 0);
+  var count = (a.workers||[]).length;
+  return perWorker * count;
+}
+function travelSiteTotals(){
+  var purchaseTotal = state.travelSitePurchases.reduce(function(s,r){ return s+num(r.amount); }, 0);
+  var hospitalityTotal = state.travelSiteHospitality.reduce(function(s,r){ return s+num(r.amount); }, 0);
+  var allowanceTotal = state.travelSiteAllowances.reduce(function(s,r){ return s+travelAllowanceAmount(r); }, 0);
+  return {purchaseTotal:purchaseTotal, hospitalityTotal:hospitalityTotal, allowanceTotal:allowanceTotal, total: purchaseTotal+hospitalityTotal+allowanceTotal};
+}
+function newTravelSiteSlip(){
+  if (!state.db) return;
+  var ref = state.db.collection('travelSiteExpenses').doc();
+  state.travelSiteCurrentId = ref.id;
+  subscribeTravelSiteDetail(ref.id);
+  render();
+}
+function openTravelSiteSlip(id){
+  state.travelSiteCurrentId = id;
+  subscribeTravelSiteDetail(id);
+  render();
+}
+function backToTravelSiteList(){
+  unsubscribeTravelSiteDetail();
+  state.travelSiteCurrentId = null;
+  state.travelSiteDoc = null;
+  render();
+}
+function deleteTravelSiteSlip(id){
+  if (!state.db) return;
+  var base = 'travelSiteExpenses/'+id;
+  Promise.all(['purchases','hospitality','allowances'].map(function(sub){
+    return state.db.collection(base+'/'+sub).get().then(function(snap){
+      return Promise.all(snap.docs.map(function(d){ return d.ref.delete(); }));
+    });
+  })).then(function(){
+    return state.db.doc(base).delete();
+  }).then(function(){
+    toast('削除しました');
+    if (state.travelSiteCurrentId === id) backToTravelSiteList();
+  }).catch(function(){ toast('削除に失敗しました', true); });
+}
+function renderTravelSiteView(){
+  return state.travelSiteCurrentId ? renderTravelSiteDetail() : renderTravelSiteList();
+}
+function renderTravelSiteList(){
+  var list = state.travelSiteList;
+  var itemsHtml = list.length ? list.map(function(s){
+    var period = (s.periodFrom||'?') + '〜' + (s.periodTo||'?');
+    return (
+      '<div class="travel-row">' +
+        '<div class="trow-top"><span>'+escapeHtml(period)+'</span><span class="trow-amount">¥'+num(s.total||0).toLocaleString()+'</span></div>' +
+        '<div class="trow-sub">請負会社：'+escapeHtml(s.contractor||'－')+'</div>' +
+        '<div class="trow-sub">現場名：'+escapeHtml(s.siteName||'－')+'</div>' +
+        '<div class="trow-btns">' +
+          '<button class="btn btn-sm" data-tsopen="'+s.id+'">開く</button>' +
+          '<button class="btn btn-sm btn-danger" data-tsdel="'+s.id+'">削除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('') : '<p class="caption">まだ登録がありません</p>';
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>旅費交通費仮払金精算書（現場単位）</h2><button class="btn btn-primary" data-act="ts-new">＋ 新規作成</button></div>' +
+      '<div class="stack" style="gap:8px">'+itemsHtml+'</div>' +
+    '</div>'
+  );
+}
+function renderTravelSiteDetail(){
+  if (!state.db || state.travelSiteDoc === null){
+    return (
+      '<div class="stack">' +
+        '<button class="btn btn-ghost" data-act="ts-back">‹ 一覧へ戻る</button>' +
+        '<div class="panel"><p class="caption">読み込んでいます…</p></div>' +
+      '</div>'
+    );
+  }
+  var staffName = travelSiteField('staffName', '');
+  var contractor = travelSiteField('contractor','');
+  var siteName = travelSiteField('siteName','');
+  var itemCode = travelSiteField('itemCode','');
+  var periodFrom = travelSiteField('periodFrom','');
+  var periodTo = travelSiteField('periodTo','');
+  var settleDate = travelSiteField('settleDate','');
+  var advanceDate = travelSiteField('advanceDate','');
+  var advanceAmount = num(travelSiteField('advanceAmount',0));
+  var workContent = (state.travelSiteDoc && state.travelSiteDoc.workContent) || [];
+
+  var contractors = distinctContractors();
+  var contractorOptionsHtml = '<option value="">（選択してください）</option>' + contractors.map(function(c){
+    return '<option value="'+escapeHtml(c)+'"'+(c===contractor?' selected':'')+'>'+escapeHtml(c)+'</option>';
+  }).join('');
+  var itemOptionsHtml = '<option value="">（任意・選ぶと現場名/請負会社を自動入力）</option>' + activeWorkItems().map(function(it){
+    return '<option value="'+escapeHtml(it.code)+'"'+(it.code===itemCode?' selected':'')+'>'+escapeHtml(it.code+' '+it.name+(it.contractor?'（'+it.contractor+'）':''))+'</option>';
+  }).join('');
+  var workContentChecks = TRAVEL_SITE_WORK_CONTENT.map(function(w){
+    var checked = workContent.indexOf(w)!==-1;
+    return '<label class="check-item"><input type="checkbox" data-tswork value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
+  }).join('');
+
+  var totals = travelSiteTotals();
+  var diff = advanceAmount - totals.total;
+
+  return (
+    '<div class="stack">' +
+      '<button class="btn btn-ghost" data-act="ts-back">‹ 一覧へ戻る</button>' +
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>旅費交通費仮払金精算書</h2></div>' +
+        '<div class="field-row">' +
+          '<div class="field"><label>精算者名</label><select id="tsStaffName"><option value=""'+(!staffName?' selected':'')+'>（選択してください）</option>'+TRAVEL_SITE_STAFF_OPTIONS.map(function(n){ return '<option value="'+escapeHtml(n)+'"'+(n===staffName?' selected':'')+'>'+escapeHtml(n)+'</option>'; }).join('')+'</select></div>' +
+          '<div class="field"><label>精算日</label><input type="date" id="tsSettleDate" value="'+escapeHtml(settleDate)+'"></div>' +
+        '</div>' +
+        '<div class="field-row" style="margin-top:10px">' +
+          '<div class="field"><label>期間（開始）</label><input type="date" id="tsPeriodFrom" value="'+escapeHtml(periodFrom)+'"></div>' +
+          '<div class="field"><label>期間（終了）</label><input type="date" id="tsPeriodTo" value="'+escapeHtml(periodTo)+'"></div>' +
+        '</div>' +
+        '<div class="field" style="margin-top:10px"><label>製番（入力補助・任意／出力時は含まれません）</label><select id="tsItemSelect">'+itemOptionsHtml+'</select></div>' +
+        '<div class="field-row" style="margin-top:10px">' +
+          '<div class="field"><label>請負会社名</label><select id="tsContractor">'+contractorOptionsHtml+'</select></div>' +
+          '<div class="field"><label>工事名・現場名</label><input type="text" id="tsSiteName" value="'+escapeHtml(siteName)+'"></div>' +
+        '</div>' +
+        '<div class="field" style="margin-top:10px"><label>作業内容</label><div class="check-grid">'+workContentChecks+'</div></div>' +
+        '<div class="field-row" style="margin-top:10px">' +
+          '<div class="field"><label>仮払日</label><input type="date" id="tsAdvanceDate" value="'+escapeHtml(advanceDate)+'"></div>' +
+          '<div class="field"><label>仮払金</label><input type="number" class="num-input" id="tsAdvanceAmount" value="'+advanceAmount+'"></div>' +
+        '</div>' +
+      '</div>' +
+
+      renderTravelSitePurchases() +
+      renderTravelSiteHospitality() +
+      renderTravelSiteAllowances() +
+
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>総額</h2></div>' +
+        '<p class="caption">購入品 ¥'+totals.purchaseTotal.toLocaleString()+'　／　接待 ¥'+totals.hospitalityTotal.toLocaleString()+'　／　昼食・夕食代補助 ¥'+totals.allowanceTotal.toLocaleString()+'</p>' +
+        '<div class="field-row" style="margin-top:8px">' +
+          '<div class="field"><label>総額</label><input type="text" value="¥'+totals.total.toLocaleString()+'" disabled></div>' +
+          '<div class="field"><label>払・戻金（仮払金－総額）</label><input type="text" value="'+(diff<0?'－':'')+'¥'+Math.abs(diff).toLocaleString()+(diff<0?'（会社から追加支払い）':'（会社へ返金）')+'" disabled></div>' +
+        '</div>' +
+        '<div class="btn-row" style="margin-top:12px">' +
+          '<button class="btn" data-act="ts-export">Excelで出力</button>' +
+          '<button class="btn btn-danger" data-act="ts-delete">この精算書を削除</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="panel">' +
+        '<div class="btn-row">' +
+          '<button class="btn btn-primary" data-act="ts-close-save" style="flex:1">保存する</button>' +
+          '<button class="btn" data-act="ts-save-next" style="flex:1">保存して次を編集</button>' +
+          '<button class="btn" data-act="ts-close" style="flex:1">閉じる</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function renderTravelSitePurchases(){
+  var rows = state.travelSitePurchases;
+  var editRow = state.travelSiteEditPurchaseId ? rows.find(function(r){ return r.id===state.travelSiteEditPurchaseId; }) : null;
+  var rowsHtml = rows.length ? rows.map(function(r){
+    return (
+      '<div class="travel-row">' +
+        '<div class="trow-top"><span>'+escapeHtml(r.date||'')+'　'+escapeHtml(r.store||'')+'</span><span class="trow-amount">¥'+num(r.amount).toLocaleString()+'</span></div>' +
+        (r.note ? '<div class="trow-sub">備考：'+escapeHtml(r.note)+'</div>' : '') +
+        '<div class="trow-btns">' +
+          '<button class="btn btn-sm" data-tspedit="'+r.id+'">編集</button>' +
+          '<button class="btn btn-sm btn-danger" data-tspdel="'+r.id+'">削除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('') : '<p class="caption">購入品の登録はまだありません</p>';
+  var defaultDate = editRow ? editRow.date : (travelSiteField('periodFrom','') || ymd(TODAY.y,TODAY.m,TODAY.d));
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>購入品（現場で調達したもの）</h2></div>' +
+      '<div class="stack" style="gap:8px">'+rowsHtml+'</div>' +
+      '<hr class="divider" style="margin:12px 0">' +
+      '<div class="stack" style="gap:10px">' +
+        '<div class="field-row">' +
+          '<div class="field"><label>月日</label><input type="date" id="tspDate" value="'+escapeHtml(defaultDate)+'"></div>' +
+          '<div class="field"><label>金額</label><input type="number" class="num-input" id="tspAmount" value="'+(editRow?num(editRow.amount):'')+'" placeholder="0"></div>' +
+        '</div>' +
+        '<div class="field"><label>店舗名</label><input type="text" id="tspStore" value="'+escapeHtml(editRow?(editRow.store||''):'')+'"></div>' +
+        '<div class="field"><label>備考（任意）</label><input type="text" id="tspNote" value="'+escapeHtml(editRow?(editRow.note||''):'')+'"></div>' +
+      '</div>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+        (editRow ? '<button class="btn btn-ghost" data-act="tsp-cancel">キャンセル</button>' : '') +
+        '<button class="btn btn-primary" data-act="tsp-save" style="flex:1">'+(editRow?'更新する':'追加する')+'</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function renderTravelSiteHospitality(){
+  var rows = state.travelSiteHospitality;
+  var editRow = state.travelSiteEditHospitalityId ? rows.find(function(r){ return r.id===state.travelSiteEditHospitalityId; }) : null;
+  var rowsHtml = rows.length ? rows.map(function(r){
+    return (
+      '<div class="travel-row">' +
+        '<div class="trow-top"><span>'+escapeHtml(r.date||'')+'　'+escapeHtml(r.store||'')+'</span><span class="trow-amount">¥'+num(r.amount).toLocaleString()+'</span></div>' +
+        (r.note ? '<div class="trow-sub">備考：'+escapeHtml(r.note)+'</div>' : '') +
+        '<div class="trow-btns">' +
+          '<button class="btn btn-sm" data-tshedit="'+r.id+'">編集</button>' +
+          '<button class="btn btn-sm btn-danger" data-tshdel="'+r.id+'">削除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('') : '<p class="caption">接待の登録はまだありません</p>';
+  var defaultDate = editRow ? editRow.date : (travelSiteField('periodFrom','') || ymd(TODAY.y,TODAY.m,TODAY.d));
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>接待</h2></div>' +
+      '<div class="stack" style="gap:8px">'+rowsHtml+'</div>' +
+      '<hr class="divider" style="margin:12px 0">' +
+      '<div class="stack" style="gap:10px">' +
+        '<div class="field-row">' +
+          '<div class="field"><label>月日</label><input type="date" id="tshDate" value="'+escapeHtml(defaultDate)+'"></div>' +
+          '<div class="field"><label>金額</label><input type="number" class="num-input" id="tshAmount" value="'+(editRow?num(editRow.amount):'')+'" placeholder="0"></div>' +
+        '</div>' +
+        '<div class="field"><label>店舗名</label><input type="text" id="tshStore" value="'+escapeHtml(editRow?(editRow.store||''):'')+'"></div>' +
+        '<div class="field"><label>備考（任意）</label><input type="text" id="tshNote" value="'+escapeHtml(editRow?(editRow.note||''):'')+'"></div>' +
+      '</div>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+        (editRow ? '<button class="btn btn-ghost" data-act="tsh-cancel">キャンセル</button>' : '') +
+        '<button class="btn btn-primary" data-act="tsh-save" style="flex:1">'+(editRow?'更新する':'追加する')+'</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function renderTravelSiteAllowances(){
+  var rows = state.travelSiteAllowances;
+  var editRow = state.travelSiteEditAllowanceId ? rows.find(function(r){ return r.id===state.travelSiteEditAllowanceId; }) : null;
+  var rowsHtml = rows.length ? rows.map(function(r){
+    var amt = travelAllowanceAmount(r);
+    return (
+      '<div class="travel-row">' +
+        '<div class="trow-top"><span>'+escapeHtml(r.date||'')+'　'+escapeHtml((r.workers||[]).join('／'))+'</span><span class="trow-amount">¥'+amt.toLocaleString()+'</span></div>' +
+        '<div class="trow-sub">区分：'+(r.area==='out'?('県外（昼食¥'+TRAVEL_LUNCH_OUT+'）'):('県内（昼食¥'+TRAVEL_LUNCH_IN+'）'))+(r.dinner?('　＋夕食補助¥'+TRAVEL_DINNER+'（宿泊）'):'')+'（'+(r.workers||[]).length+'名）</div>' +
+        '<div class="trow-btns">' +
+          '<button class="btn btn-sm" data-tsaedit="'+r.id+'">編集</button>' +
+          '<button class="btn btn-sm btn-danger" data-tsadel="'+r.id+'">削除</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }).join('') : '<p class="caption">昼食・夕食代補助の登録はまだありません</p>';
+  var defaultDate = editRow ? editRow.date : (travelSiteField('periodFrom','') || ymd(TODAY.y,TODAY.m,TODAY.d));
+  var workerChecks = TRAVEL_WORKERS.map(function(w){
+    var checked = editRow ? (editRow.workers||[]).indexOf(w)!==-1 : false;
+    return '<label class="check-item"><input type="checkbox" data-tsaworker value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
+  }).join('');
+  var areaOut = !!(editRow && editRow.area==='out');
+  var areaIn = !areaOut;
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>昼食・夕食代補助</h2></div>' +
+      '<p class="caption" style="margin-bottom:10px">県内は昼食代補助¥'+TRAVEL_LUNCH_IN+'、県外は¥'+TRAVEL_LUNCH_OUT+'。宿泊して夕食が必要な場合は夕食代補助¥'+TRAVEL_DINNER+'を追加します。金額はチェックした作業者の人数×各補助額です。</p>' +
+      '<div class="stack" style="gap:8px">'+rowsHtml+'</div>' +
+      '<hr class="divider" style="margin:12px 0">' +
+      '<div class="stack" style="gap:10px">' +
+        '<div class="field"><label>月日</label><input type="date" id="tsaDate" value="'+escapeHtml(defaultDate)+'"></div>' +
+        '<div class="field"><label>作業者（複数選択可）</label><div class="check-grid">'+workerChecks+'</div></div>' +
+        '<div class="field"><label>区分</label><div class="check-grid">' +
+          '<label class="check-item"><input type="radio" name="tsaArea" value="in"'+(areaIn?' checked':'')+'>県内（¥'+TRAVEL_LUNCH_IN+'）</label>' +
+          '<label class="check-item"><input type="radio" name="tsaArea" value="out"'+(areaOut?' checked':'')+'>県外（¥'+TRAVEL_LUNCH_OUT+'）</label>' +
+        '</div></div>' +
+        '<div class="field"><div class="check-grid"><label class="check-item"><input type="checkbox" id="tsaDinner"'+(editRow&&editRow.dinner?' checked':'')+'>宿泊して夕食代補助（＋¥'+TRAVEL_DINNER+'）を追加する</label></div></div>' +
+      '</div>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+        (editRow ? '<button class="btn btn-ghost" data-act="tsa-cancel">キャンセル</button>' : '') +
+        '<button class="btn btn-primary" data-act="tsa-save" style="flex:1">'+(editRow?'更新する':'追加する')+'</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function bindTravelSiteView(){
+  if (state.travelSiteCurrentId) bindTravelSiteDetail();
+  else bindTravelSiteList();
+}
+function bindTravelSiteList(){
+  var newBtn = document.querySelector('[data-act="ts-new"]');
+  if (newBtn) newBtn.addEventListener('click', newTravelSiteSlip);
+  document.querySelectorAll('[data-tsopen]').forEach(function(el){
+    el.addEventListener('click', function(){ openTravelSiteSlip(el.getAttribute('data-tsopen')); });
+  });
+  document.querySelectorAll('[data-tsdel]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-tsdel');
+      confirmModal('削除しますか', 'この精算書と明細をすべて削除します。元に戻せません。', function(){ deleteTravelSiteSlip(id); });
+    });
+  });
+}
+function bindTravelSiteDetail(){
+  var backBtn = document.querySelector('[data-act="ts-back"]');
+  if (backBtn) backBtn.addEventListener('click', backToTravelSiteList);
+
+  var closeSaveBtn = document.querySelector('[data-act="ts-close-save"]');
+  if (closeSaveBtn) closeSaveBtn.addEventListener('click', function(){ toast('保存しました'); backToTravelSiteList(); });
+  var closeBtn = document.querySelector('[data-act="ts-close"]');
+  if (closeBtn) closeBtn.addEventListener('click', function(){ unsubscribeTravelSiteDetail(); state.travelSiteCurrentId=null; state.travelSiteDoc=null; goToInputTop(); });
+  var saveNextBtn = document.querySelector('[data-act="ts-save-next"]');
+  if (saveNextBtn) saveNextBtn.addEventListener('click', function(){ toast('保存しました'); newTravelSiteSlip(); });
+
+  [['tsStaffName','staffName'],['tsSettleDate','settleDate'],['tsSiteName','siteName']].forEach(function(pair){
+    var el = document.getElementById(pair[0]);
+    if (el) el.addEventListener('change', function(){ var p={}; p[pair[1]]=el.value; saveTravelSiteHeader(p); });
+  });
+  [['tsPeriodFrom','periodFrom'],['tsPeriodTo','periodTo'],['tsAdvanceDate','advanceDate']].forEach(function(pair){
+    var el = document.getElementById(pair[0]);
+    if (el) el.addEventListener('change', function(){ var p={}; p[pair[1]]=el.value; saveTravelSiteHeader(p); });
+  });
+  var advAmtEl = document.getElementById('tsAdvanceAmount');
+  if (advAmtEl) advAmtEl.addEventListener('change', function(){ saveTravelSiteHeader({advanceAmount:num(advAmtEl.value)}); });
+  var contractorEl = document.getElementById('tsContractor');
+  if (contractorEl) contractorEl.addEventListener('change', function(){ saveTravelSiteHeader({contractor:contractorEl.value}); });
+  var itemSel = document.getElementById('tsItemSelect');
+  if (itemSel) itemSel.addEventListener('change', function(){
+    var code = itemSel.value;
+    var it = state.workItems.find(function(x){ return x.code === code; });
+    var patch = {itemCode: code};
+    if (it){
+      patch.siteName = it.name || '';
+      var siteEl = document.getElementById('tsSiteName');
+      if (siteEl) siteEl.value = it.name || '';
+      if (it.contractor){
+        patch.contractor = it.contractor;
+        var contractorSel = document.getElementById('tsContractor');
+        if (contractorSel) contractorSel.value = it.contractor;
+      }
+    }
+    saveTravelSiteHeader(patch);
+  });
+  document.querySelectorAll('[data-tswork]').forEach(function(el){
+    el.addEventListener('change', function(){
+      var checked = Array.from(document.querySelectorAll('[data-tswork]:checked')).map(function(b){ return b.value; });
+      saveTravelSiteHeader({workContent: checked});
+    });
+  });
+
+  var expBtn = document.querySelector('[data-act="ts-export"]');
+  if (expBtn) expBtn.addEventListener('click', exportTravelSiteExcel);
+  var delBtn = document.querySelector('[data-act="ts-delete"]');
+  if (delBtn) delBtn.addEventListener('click', function(){
+    var id = state.travelSiteCurrentId;
+    confirmModal('削除しますか', 'この精算書と明細をすべて削除します。元に戻せません。', function(){ deleteTravelSiteSlip(id); });
+  });
+
+  var pSave = document.querySelector('[data-act="tsp-save"]');
+  if (pSave) pSave.addEventListener('click', saveTravelSitePurchase);
+  var pCancel = document.querySelector('[data-act="tsp-cancel"]');
+  if (pCancel) pCancel.addEventListener('click', function(){ state.travelSiteEditPurchaseId=null; render(); });
+  document.querySelectorAll('[data-tspedit]').forEach(function(el){
+    el.addEventListener('click', function(){ state.travelSiteEditPurchaseId = el.getAttribute('data-tspedit'); render(); });
+  });
+  document.querySelectorAll('[data-tspdel]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-tspdel');
+      confirmModal('削除しますか', 'この明細を削除します。', function(){ deleteTravelSiteRow('purchases', id); });
+    });
+  });
+
+  var hSave = document.querySelector('[data-act="tsh-save"]');
+  if (hSave) hSave.addEventListener('click', saveTravelSiteHospitality);
+  var hCancel = document.querySelector('[data-act="tsh-cancel"]');
+  if (hCancel) hCancel.addEventListener('click', function(){ state.travelSiteEditHospitalityId=null; render(); });
+  document.querySelectorAll('[data-tshedit]').forEach(function(el){
+    el.addEventListener('click', function(){ state.travelSiteEditHospitalityId = el.getAttribute('data-tshedit'); render(); });
+  });
+  document.querySelectorAll('[data-tshdel]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-tshdel');
+      confirmModal('削除しますか', 'この明細を削除します。', function(){ deleteTravelSiteRow('hospitality', id); });
+    });
+  });
+
+  var aSave = document.querySelector('[data-act="tsa-save"]');
+  if (aSave) aSave.addEventListener('click', saveTravelSiteAllowance);
+  var aCancel = document.querySelector('[data-act="tsa-cancel"]');
+  if (aCancel) aCancel.addEventListener('click', function(){ state.travelSiteEditAllowanceId=null; render(); });
+  document.querySelectorAll('[data-tsaedit]').forEach(function(el){
+    el.addEventListener('click', function(){ state.travelSiteEditAllowanceId = el.getAttribute('data-tsaedit'); render(); });
+  });
+  document.querySelectorAll('[data-tsadel]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-tsadel');
+      confirmModal('削除しますか', 'この明細を削除します。', function(){ deleteTravelSiteRow('allowances', id); });
+    });
+  });
+}
+function saveTravelSitePurchase(){
+  if (!state.db || !state.travelSiteCurrentId) return;
+  var date = (document.getElementById('tspDate')||{}).value || '';
+  var store = ((document.getElementById('tspStore')||{}).value || '').trim();
+  var amount = num((document.getElementById('tspAmount')||{}).value);
+  var note = ((document.getElementById('tspNote')||{}).value || '').trim();
+  if (!date){ toast('月日を入力してください', true); return; }
+  if (!store){ toast('店舗名を入力してください', true); return; }
+  if (!amount){ toast('金額を入力してください', true); return; }
+  var data = {date:date, store:store, amount:amount, note:note, updatedAt:Date.now()};
+  var col = state.db.collection('travelSiteExpenses/'+state.travelSiteCurrentId+'/purchases');
+  var editId = state.travelSiteEditPurchaseId;
+  var oldAmount = 0;
+  if (editId){
+    var old = state.travelSitePurchases.find(function(r){ return r.id===editId; });
+    oldAmount = old ? num(old.amount) : 0;
+  }
+  var p = editId ? col.doc(editId).set(data,{merge:true}) : col.add(Object.assign({createdAt:Date.now()}, data));
+  p.then(function(){
+    state.travelSiteEditPurchaseId = null;
+    toast(editId ? '更新しました' : '追加しました');
+    saveTravelSiteHeader({total: num(travelSiteField('total',0)) - oldAmount + amount});
+    render();
+  }).catch(function(){ toast('保存に失敗しました', true); });
+}
+function saveTravelSiteHospitality(){
+  if (!state.db || !state.travelSiteCurrentId) return;
+  var date = (document.getElementById('tshDate')||{}).value || '';
+  var store = ((document.getElementById('tshStore')||{}).value || '').trim();
+  var amount = num((document.getElementById('tshAmount')||{}).value);
+  var note = ((document.getElementById('tshNote')||{}).value || '').trim();
+  if (!date){ toast('月日を入力してください', true); return; }
+  if (!amount){ toast('金額を入力してください', true); return; }
+  var data = {date:date, store:store, amount:amount, note:note, updatedAt:Date.now()};
+  var col = state.db.collection('travelSiteExpenses/'+state.travelSiteCurrentId+'/hospitality');
+  var editId = state.travelSiteEditHospitalityId;
+  var oldAmount = 0;
+  if (editId){
+    var old = state.travelSiteHospitality.find(function(r){ return r.id===editId; });
+    oldAmount = old ? num(old.amount) : 0;
+  }
+  var p = editId ? col.doc(editId).set(data,{merge:true}) : col.add(Object.assign({createdAt:Date.now()}, data));
+  p.then(function(){
+    state.travelSiteEditHospitalityId = null;
+    toast(editId ? '更新しました' : '追加しました');
+    saveTravelSiteHeader({total: num(travelSiteField('total',0)) - oldAmount + amount});
+    render();
+  }).catch(function(){ toast('保存に失敗しました', true); });
+}
+function saveTravelSiteAllowance(){
+  if (!state.db || !state.travelSiteCurrentId) return;
+  var date = (document.getElementById('tsaDate')||{}).value || '';
+  var workers = Array.from(document.querySelectorAll('input[data-tsaworker]:checked')).map(function(b){ return b.value; });
+  var areaEl = document.querySelector('input[name="tsaArea"]:checked');
+  var area = areaEl ? areaEl.value : 'in';
+  var dinner = !!(document.getElementById('tsaDinner')||{}).checked;
+  if (!date){ toast('月日を入力してください', true); return; }
+  if (!workers.length){ toast('作業者を選択してください', true); return; }
+  var data = {date:date, workers:workers, area:area, dinner:dinner, updatedAt:Date.now()};
+  var amount = travelAllowanceAmount(data);
+  var col = state.db.collection('travelSiteExpenses/'+state.travelSiteCurrentId+'/allowances');
+  var editId = state.travelSiteEditAllowanceId;
+  var oldAmount = 0;
+  if (editId){
+    var old = state.travelSiteAllowances.find(function(r){ return r.id===editId; });
+    oldAmount = old ? travelAllowanceAmount(old) : 0;
+  }
+  var p = editId ? col.doc(editId).set(data,{merge:true}) : col.add(Object.assign({createdAt:Date.now()}, data));
+  p.then(function(){
+    state.travelSiteEditAllowanceId = null;
+    toast(editId ? '更新しました' : '追加しました');
+    saveTravelSiteHeader({total: num(travelSiteField('total',0)) - oldAmount + amount});
+    render();
+  }).catch(function(){ toast('保存に失敗しました', true); });
+}
+function deleteTravelSiteRow(kind, id){
+  if (!state.db || !state.travelSiteCurrentId) return;
+  var arr = kind==='purchases' ? state.travelSitePurchases : kind==='hospitality' ? state.travelSiteHospitality : state.travelSiteAllowances;
+  var row = arr.find(function(r){ return r.id===id; });
+  var amount = row ? (kind==='allowances' ? travelAllowanceAmount(row) : num(row.amount)) : 0;
+  state.db.collection('travelSiteExpenses/'+state.travelSiteCurrentId+'/'+kind).doc(id).delete().then(function(){
+    toast('削除しました');
+    saveTravelSiteHeader({total: num(travelSiteField('total',0)) - amount});
+  }).catch(function(){ toast('削除に失敗しました', true); });
+}
+function exportTravelSiteExcel(){
+  if (typeof ExcelJS === 'undefined'){ toast('Excel出力ライブラリの読み込みに失敗しました', true); return; }
+  var staffName = travelSiteField('staffName', '');
+  var contractor = travelSiteField('contractor','');
+  var siteName = travelSiteField('siteName','');
+  var periodFrom = travelSiteField('periodFrom','');
+  var periodTo = travelSiteField('periodTo','');
+  var settleDate = travelSiteField('settleDate','');
+  var advanceAmount = num(travelSiteField('advanceAmount',0));
+  var workContent = (state.travelSiteDoc && state.travelSiteDoc.workContent) || [];
+  var totals = travelSiteTotals();
+  var diff = advanceAmount - totals.total;
+
+  var wb = new ExcelJS.Workbook();
+  var ws = wb.addWorksheet('現場単位');
+  ws.columns = [{width:14},{width:20},{width:14},{width:14},{width:20}];
+
+  ws.mergeCells(1,1,1,5);
+  ws.getCell(1,1).value = '旅費交通費仮払金精算書';
+  ws.getCell(1,1).font = {bold:true, size:14};
+
+  ws.getCell(2,1).value = '精算者名'; ws.getCell(2,1).font = {bold:true};
+  ws.getCell(2,2).value = staffName;
+  ws.getCell(2,3).value = '精算日'; ws.getCell(2,3).font = {bold:true};
+  ws.getCell(2,4).value = settleDate;
+
+  ws.getCell(3,1).value = '期間'; ws.getCell(3,1).font = {bold:true};
+  ws.getCell(3,2).value = (periodFrom||'')+'〜'+(periodTo||'');
+  ws.getCell(3,3).value = '請負会社名'; ws.getCell(3,3).font = {bold:true};
+  ws.getCell(3,4).value = contractor;
+
+  ws.getCell(4,1).value = '工事名・現場名'; ws.getCell(4,1).font = {bold:true};
+  ws.getCell(4,2).value = siteName;
+  ws.getCell(4,3).value = '作業内容'; ws.getCell(4,3).font = {bold:true};
+  ws.getCell(4,4).value = workContent.join('／');
+  applyBorder(ws, 2, 1, 4, 4);
+
+  var r = 6;
+  ws.getCell(r,1).value = '■購入品'; ws.getCell(r,1).font = {bold:true};
+  r++;
+  var purchaseHeaderRow = r;
+  ws.getRow(r).values = ['月日','店舗名','金額','備考'];
+  ws.getRow(r).font = {bold:true};
+  headerFill(ws, r, 1, r, 4);
+  state.travelSitePurchases.forEach(function(row){
+    r++;
+    ws.getRow(r).values = [row.date||'', row.store||'', num(row.amount), row.note||''];
+  });
+  applyBorder(ws, purchaseHeaderRow, 1, r, 4);
+  r++;
+  ws.getCell(r,3).value = '購入品計'; ws.getCell(r,3).font = {bold:true};
+  ws.getCell(r,4).value = totals.purchaseTotal;
+
+  r += 2;
+  ws.getCell(r,1).value = '■接待'; ws.getCell(r,1).font = {bold:true};
+  r++;
+  var hospHeaderRow = r;
+  ws.getRow(r).values = ['月日','店舗名','金額','備考'];
+  ws.getRow(r).font = {bold:true};
+  headerFill(ws, r, 1, r, 4);
+  state.travelSiteHospitality.forEach(function(row){
+    r++;
+    ws.getRow(r).values = [row.date||'', row.store||'', num(row.amount), row.note||''];
+  });
+  applyBorder(ws, hospHeaderRow, 1, r, 4);
+  r++;
+  ws.getCell(r,3).value = '接待計'; ws.getCell(r,3).font = {bold:true};
+  ws.getCell(r,4).value = totals.hospitalityTotal;
+
+  r += 2;
+  ws.getCell(r,1).value = '■昼食・夕食代補助'; ws.getCell(r,1).font = {bold:true};
+  r++;
+  var allowHeaderRow = r;
+  ws.getRow(r).values = ['月日','作業者','区分','夕食補助(宿泊)','金額'];
+  ws.getRow(r).font = {bold:true};
+  headerFill(ws, r, 1, r, 5);
+  state.travelSiteAllowances.forEach(function(row){
+    r++;
+    ws.getRow(r).values = [row.date||'', (row.workers||[]).join('／'), row.area==='out'?'県外':'県内', row.dinner?'あり':'', travelAllowanceAmount(row)];
+  });
+  applyBorder(ws, allowHeaderRow, 1, r, 5);
+  r++;
+  ws.getCell(r,4).value = '補助計'; ws.getCell(r,4).font = {bold:true};
+  ws.getCell(r,5).value = totals.allowanceTotal;
+
+  r += 2;
+  var summaryStart = r;
+  ws.getCell(r,4).value = '総額'; ws.getCell(r,4).font = {bold:true};
+  ws.getCell(r,5).value = totals.total;
+  r++;
+  ws.getCell(r,4).value = '仮払金'; ws.getCell(r,4).font = {bold:true};
+  ws.getCell(r,5).value = advanceAmount;
+  r++;
+  ws.getCell(r,4).value = diff<0?'追加精算':'払戻金'; ws.getCell(r,4).font = {bold:true};
+  ws.getCell(r,5).value = Math.abs(diff);
+  applyBorder(ws, summaryStart, 4, r, 5);
+
+  var fname = '旅費交通費仮払精算_'+(periodFrom||'').replace(/-/g,'')+'_'+(siteName||'現場').replace(/[\\\/:*?"<>|]/g,'');
+  downloadWorkbook(wb, fname+'.xlsx');
+}
+
 /* ================= MASTER VIEW ================= */
 function renderMasterView(){
   if (!state.adminUnlocked){
@@ -1247,6 +2332,7 @@ function renderMasterView(){
     {id:'workers', label:'作業者'},
     {id:'items', label:'作業内容(製番)'},
     {id:'holiday', label:'休日設定'},
+    {id:'summary', label:'集計'},
     {id:'security', label:'パスワード'}
   ].map(function(s){
     return '<button class="tab" data-msec="'+s.id+'" aria-selected="'+(state.masterSection===s.id)+'">'+s.label+'</button>';
@@ -1256,6 +2342,7 @@ function renderMasterView(){
   if (state.masterSection==='workers') body = renderMasterWorkers();
   else if (state.masterSection==='items') body = renderMasterItems();
   else if (state.masterSection==='holiday') body = renderMasterHoliday();
+  else if (state.masterSection==='summary') body = renderSummaryView();
   else body = renderMasterSecurity();
 
   return (
@@ -1375,6 +2462,7 @@ function renderMasterSecurity(){
 /* ================= bind view events ================= */
 function bindView(){
   if (state.view === 'input') bindInputView();
+  else if (state.view === 'travel') bindTravelView();
   else if (state.view === 'summary') bindSummaryView();
   else bindMasterView();
 }
@@ -1573,6 +2661,8 @@ function bindMasterView(){
   document.querySelectorAll('[data-msec]').forEach(function(el){
     el.addEventListener('click', function(){ state.masterSection = el.getAttribute('data-msec'); render(); });
   });
+
+  if (state.masterSection === 'summary') bindSummaryView();
 
   var addWorkerBtn = document.querySelector('[data-act="add-worker"]');
   if (addWorkerBtn) addWorkerBtn.addEventListener('click', function(){
