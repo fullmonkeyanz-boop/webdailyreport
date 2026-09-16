@@ -166,6 +166,7 @@ a{color:var(--accent)}
   border:1px solid var(--border-strong);border-radius:var(--radius-s);background:var(--surface-2);
   padding:9px 10px;min-height:40px;color:var(--text);width:100%;
 }
+.field input[type="date"]{max-width:140px;padding:9px 6px;font-size:13px}
 .field input:focus-visible,.field select:focus-visible{outline:2px solid var(--accent);outline-offset:0}
 .field-warn label{color:var(--red)}
 .field-warn input{border-color:var(--red);background:var(--red-soft)}
@@ -175,6 +176,7 @@ a{color:var(--accent)}
 .num-input{font-family:var(--font-mono);text-align:right}
 @media (max-width:380px){
   .field-row{grid-template-columns:1fr}
+  .field input[type="date"]{max-width:none}
 }
 
 .check-grid{display:flex;flex-wrap:wrap;gap:6px 14px;padding:9px 10px;border:1px solid var(--border-strong);border-radius:var(--radius-s);background:var(--surface-2)}
