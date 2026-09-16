@@ -407,7 +407,15 @@ var state = {
   travelSiteAllowancesUnsub: null,
   travelSiteEditPurchaseId: null,
   travelSiteEditHospitalityId: null,
-  travelSiteEditAllowanceId: null
+  travelSiteEditAllowanceId: null,
+
+  travelMaster: {
+    workers: TRAVEL_WORKERS.slice(),
+    summaryOptions: TRAVEL_SUMMARY_OPTIONS.slice(),
+    siteStaff: TRAVEL_SITE_STAFF_OPTIONS.slice(),
+    siteWorkContent: TRAVEL_SITE_WORK_CONTENT.slice(),
+    defaultStaff: TRAVEL_DEFAULT_STAFF
+  }
 };
 
 function todayParts(){
@@ -606,6 +614,17 @@ function startListeners(db){
       state._renamedZatsuyou = true;
       db.collection('workItems').doc(zatsuyou.id).update({name:'雑用その他'});
     }
+    render();
+  });
+
+  db.doc('settings/travelMaster').onSnapshot(function(snap){
+    state.travelMaster = Object.assign({
+      workers: TRAVEL_WORKERS.slice(),
+      summaryOptions: TRAVEL_SUMMARY_OPTIONS.slice(),
+      siteStaff: TRAVEL_SITE_STAFF_OPTIONS.slice(),
+      siteWorkContent: TRAVEL_SITE_WORK_CONTENT.slice(),
+      defaultStaff: TRAVEL_DEFAULT_STAFF
+    }, snap.exists ? snap.data() : {});
     render();
   });
 
@@ -1437,7 +1456,7 @@ function renderTravelMonthlyView(){
     );
   }
 
-  var staffName = travelHeaderField('staffName', TRAVEL_DEFAULT_STAFF);
+  var staffName = travelHeaderField('staffName', state.travelMaster.defaultStaff);
   var settleDate = travelHeaderField('settleDate','');
   var prevCarryDefault = (state.travelPrevCarryDefault!==null && state.travelPrevCarryDefault!==undefined) ? state.travelPrevCarryDefault : 0;
   var prevBalance = num(travelHeaderField('prevBalance', prevCarryDefault));
@@ -1447,7 +1466,7 @@ function renderTravelMonthlyView(){
   var carry = prevBalance + advance - total;
 
   var contractors = distinctContractors();
-  var workers = TRAVEL_WORKERS;
+  var workers = state.travelMaster.workers;
   var editRow = state.travelEditId ? rows.find(function(r){ return r.id === state.travelEditId; }) : null;
 
   var itemOptionsHtml = '<option value="">（任意・選ぶと現場名/請負会社を自動入力）</option>' + activeWorkItems().map(function(it){
@@ -1464,7 +1483,7 @@ function renderTravelMonthlyView(){
     return '<label class="check-item"><input type="checkbox" data-tcheck="worker" value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
   }).join('');
 
-  var summaryChecks = TRAVEL_SUMMARY_OPTIONS.map(function(s){
+  var summaryChecks = state.travelMaster.summaryOptions.map(function(s){
     var checked = editRow ? (editRow.summary||[]).indexOf(s)!==-1 : false;
     return '<label class="check-item"><input type="checkbox" data-tcheck="summary" value="'+escapeHtml(s)+'"'+(checked?' checked':'')+'>'+escapeHtml(s)+'</label>';
   }).join('');
@@ -1699,7 +1718,7 @@ function downloadWorkbook(wb, filename){
 function exportTravelExcel(){
   if (typeof ExcelJS === 'undefined'){ toast('Excel出力ライブラリの読み込みに失敗しました', true); return; }
   var y = state.travelYM.y, m = state.travelYM.m;
-  var staffName = travelHeaderField('staffName', TRAVEL_DEFAULT_STAFF);
+  var staffName = travelHeaderField('staffName', state.travelMaster.defaultStaff);
   var prevCarryDefault = (state.travelPrevCarryDefault!==null && state.travelPrevCarryDefault!==undefined) ? state.travelPrevCarryDefault : 0;
   var prevBalance = num(travelHeaderField('prevBalance', prevCarryDefault));
   var advance = num(travelHeaderField('advance',0));
@@ -1893,7 +1912,7 @@ function renderTravelSiteDetail(){
   var itemOptionsHtml = '<option value="">（任意・選ぶと現場名/請負会社を自動入力）</option>' + activeWorkItems().map(function(it){
     return '<option value="'+escapeHtml(it.code)+'"'+(it.code===itemCode?' selected':'')+'>'+escapeHtml(it.code+' '+it.name+(it.contractor?'（'+it.contractor+'）':''))+'</option>';
   }).join('');
-  var workContentChecks = TRAVEL_SITE_WORK_CONTENT.map(function(w){
+  var workContentChecks = state.travelMaster.siteWorkContent.map(function(w){
     var checked = workContent.indexOf(w)!==-1;
     return '<label class="check-item"><input type="checkbox" data-tswork value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
   }).join('');
@@ -1907,7 +1926,7 @@ function renderTravelSiteDetail(){
       '<div class="panel">' +
         '<div class="panel-head"><h2>旅費交通費仮払金精算書</h2></div>' +
         '<div class="field-row">' +
-          '<div class="field"><label>精算者名</label><select id="tsStaffName"><option value=""'+(!staffName?' selected':'')+'>（選択してください）</option>'+TRAVEL_SITE_STAFF_OPTIONS.map(function(n){ return '<option value="'+escapeHtml(n)+'"'+(n===staffName?' selected':'')+'>'+escapeHtml(n)+'</option>'; }).join('')+'</select></div>' +
+          '<div class="field"><label>精算者名</label><select id="tsStaffName"><option value=""'+(!staffName?' selected':'')+'>（選択してください）</option>'+state.travelMaster.siteStaff.map(function(n){ return '<option value="'+escapeHtml(n)+'"'+(n===staffName?' selected':'')+'>'+escapeHtml(n)+'</option>'; }).join('')+'</select></div>' +
           '<div class="field"><label>精算日</label><input type="date" id="tsSettleDate" value="'+escapeHtml(settleDate)+'"></div>' +
         '</div>' +
         '<div class="field-row" style="margin-top:10px">' +
@@ -2042,7 +2061,7 @@ function renderTravelSiteAllowances(){
     );
   }).join('') : '<p class="caption">昼食・夕食代補助の登録はまだありません</p>';
   var defaultDate = editRow ? editRow.date : (travelSiteField('periodFrom','') || ymd(TODAY.y,TODAY.m,TODAY.d));
-  var workerChecks = TRAVEL_WORKERS.map(function(w){
+  var workerChecks = state.travelMaster.workers.map(function(w){
     var checked = editRow ? (editRow.workers||[]).indexOf(w)!==-1 : false;
     return '<label class="check-item"><input type="checkbox" data-tsaworker value="'+escapeHtml(w)+'"'+(checked?' checked':'')+'>'+escapeHtml(w)+'</label>';
   }).join('');
@@ -2400,6 +2419,7 @@ function renderMasterView(){
     {id:'workers', label:'作業者'},
     {id:'items', label:'作業内容(製番)'},
     {id:'holiday', label:'休日設定'},
+    {id:'travel', label:'旅費交通費マスター'},
     {id:'summary', label:'集計'},
     {id:'security', label:'パスワード'}
   ].map(function(s){
@@ -2410,6 +2430,7 @@ function renderMasterView(){
   if (state.masterSection==='workers') body = renderMasterWorkers();
   else if (state.masterSection==='items') body = renderMasterItems();
   else if (state.masterSection==='holiday') body = renderMasterHoliday();
+  else if (state.masterSection==='travel') body = renderMasterTravel();
   else if (state.masterSection==='summary') body = renderSummaryView();
   else body = renderMasterSecurity();
 
@@ -2472,6 +2493,45 @@ function renderMasterItems(){
         '<div class="field"><label>請負会社</label><input type="text" id="newItemContractor" placeholder="例）〇〇建設"></div>' +
         '<div class="field"><label>名称</label><input type="text" id="newItemName" placeholder="例）〇〇工事"></div>' +
         '<button class="btn btn-primary" data-act="add-item" style="align-self:end;height:40px">追加</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function renderMasterTravel(){
+  var tm = state.travelMaster;
+  function listSection(field, title, caption, placeholder){
+    var items = (tm[field]||[]).map(function(v){
+      return (
+        '<div class="list-row">' +
+          '<span class="name">'+escapeHtml(v)+'</span>' +
+          '<button class="btn btn-sm btn-danger" data-deltm-field="'+field+'" data-deltm-value="'+escapeHtml(v)+'">削除</button>' +
+        '</div>'
+      );
+    }).join('');
+    return (
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>'+title+'</h2></div>' +
+        (caption ? '<p class="caption" style="margin-bottom:10px">'+caption+'</p>' : '') +
+        '<div class="stack" style="gap:0">'+(items || '<p class="caption">未登録です</p>')+'</div>' +
+        '<hr class="divider" style="margin:14px 0">' +
+        '<div class="item-row" style="grid-template-columns:1fr auto">' +
+          '<div class="field"><label>追加</label><input type="text" data-addtm-input="'+field+'" placeholder="'+placeholder+'"></div>' +
+          '<button class="btn btn-primary" data-addtm-field="'+field+'" style="align-self:end;height:40px">追加</button>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+  return (
+    '<div class="stack">' +
+      listSection('workers', '昼食・夕食代補助 対象作業者', '「月単位」「現場単位」共通で、昼食・夕食代補助の欄に選択肢として表示される作業者です。', '例）山田太郎') +
+      listSection('summaryOptions', '月単位・摘要の選択肢', '「明細を追加」の摘要欄で選べる選択肢です。', '例）検査') +
+      listSection('siteStaff', '現場単位・精算者名の選択肢', '現場単位の精算書ヘッダーで「精算者名」に選べる氏名です。', '例）山田太郎') +
+      listSection('siteWorkContent', '現場単位・作業内容の選択肢', '現場単位の精算書ヘッダーで「作業内容」に選べる選択肢です。', '例）搬入') +
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>月単位・担当者名の既定値</h2></div>' +
+        '<p class="caption" style="margin-bottom:10px">月単位の精算書を新規作成したときに、担当者名欄に自動入力される氏名です（後から変更可）。</p>' +
+        '<div class="field"><label>担当者名</label><input type="text" id="travelDefaultStaffInput" value="'+escapeHtml(tm.defaultStaff||'')+'"></div>' +
+        '<button class="btn btn-primary" data-act="save-travel-default-staff" style="margin-top:10px">保存</button>' +
       '</div>' +
     '</div>'
   );
@@ -2843,6 +2903,37 @@ function bindMasterView(){
         state.db.collection('workItems').doc(id).delete().then(function(){ toast('削除しました'); });
       });
     });
+  });
+
+  document.querySelectorAll('[data-addtm-field]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var field = el.getAttribute('data-addtm-field');
+      var input = document.querySelector('[data-addtm-input="'+field+'"]');
+      var v = (input.value||'').trim();
+      if (!v){ toast('入力してください', true); return; }
+      var cur = (state.travelMaster[field]||[]).slice();
+      if (cur.indexOf(v) !== -1){ toast('すでに登録されています', true); return; }
+      cur.push(v);
+      var patch = {}; patch[field] = cur;
+      state.db.doc('settings/travelMaster').set(patch, {merge:true}).then(function(){
+        toast('追加しました'); input.value = '';
+      });
+    });
+  });
+  document.querySelectorAll('[data-deltm-field]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var field = el.getAttribute('data-deltm-field');
+      var value = el.getAttribute('data-deltm-value');
+      var cur = (state.travelMaster[field]||[]).filter(function(x){ return x !== value; });
+      var patch = {}; patch[field] = cur;
+      state.db.doc('settings/travelMaster').set(patch, {merge:true}).then(function(){ toast('削除しました'); });
+    });
+  });
+  var saveDefaultStaffBtn = document.querySelector('[data-act="save-travel-default-staff"]');
+  if (saveDefaultStaffBtn) saveDefaultStaffBtn.addEventListener('click', function(){
+    var v = (document.getElementById('travelDefaultStaffInput').value||'').trim();
+    if (!v){ toast('氏名を入力してください', true); return; }
+    state.db.doc('settings/travelMaster').set({defaultStaff:v}, {merge:true}).then(function(){ toast('保存しました'); });
   });
 
   document.querySelectorAll('[data-dow]').forEach(function(el){
