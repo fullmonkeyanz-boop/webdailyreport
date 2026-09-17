@@ -312,6 +312,8 @@ table.ledger.bento-table th.bento-name-th{
   background:var(--surface-2);font-family:var(--font-mono);font-weight:700;font-size:11px;color:var(--text);
   touch-action:none;padding:0;
 }
+table.ledger.bento-table td.bento-yen-cell{font-size:8px;letter-spacing:-.02em;white-space:nowrap;padding-left:1px;padding-right:1px;border-right:1px solid var(--border)}
+table.ledger.bento-table td.bento-yen-cell:last-child{border-right:none}
 .order-cell[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
 .order-cell.locked{opacity:.4}
 tr.bento-row-holiday td{background:var(--red-soft)}
@@ -2846,7 +2848,7 @@ function renderBentoOrderTable(y, m, dim, workers){
   }
   var grandTotal = 0;
   var totalFoodCells = workers.map(function(w){ grandTotal += colTotals[w.id]; return '<td>' + (colTotals[w.id]||'') + '</td>'; }).join('');
-  var totalYenCells = workers.map(function(w){ return '<td>¥' + (colTotals[w.id]*unitPrice).toLocaleString() + '</td>'; }).join('');
+  var totalYenCells = workers.map(function(w){ return '<td class="bento-yen-cell">¥' + (colTotals[w.id]*unitPrice).toLocaleString() + '</td>'; }).join('');
   return (
     '<div class="panel">' +
       '<div class="panel-head"><h2>注文一覧</h2></div>' +
@@ -2856,7 +2858,7 @@ function renderBentoOrderTable(y, m, dim, workers){
         '<tbody>' + bodyRows + '</tbody>' +
         '<tfoot>' +
           '<tr><td>合計/食</td>' + totalFoodCells + '<td>' + (grandTotal||'') + '</td></tr>' +
-          '<tr><td>合計/円</td>' + totalYenCells + '<td>¥' + (grandTotal*unitPrice).toLocaleString() + '</td></tr>' +
+          '<tr><td>合計/円</td>' + totalYenCells + '<td class="bento-yen-cell">¥' + (grandTotal*unitPrice).toLocaleString() + '</td></tr>' +
         '</tfoot>' +
       '</table></div>' +
       '<div class="btn-row" style="margin-top:12px">' +
