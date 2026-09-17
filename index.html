@@ -300,11 +300,16 @@ table.ledger tfoot td{font-weight:700;background:var(--surface-2);border-top:1.5
 .bento-banner{margin:10px 16px 0;background:var(--accent-soft);border-color:var(--accent-soft-strong)}
 .bento-banner p{margin:0}
 .bento-banner.closed{background:var(--surface-2);border-color:var(--border)}
-table.ledger.bento-table th,table.ledger.bento-table td{padding:4px 6px;text-align:center}
-table.ledger.bento-table th:first-child,table.ledger.bento-table td:first-child{text-align:left}
+table.ledger.bento-table{min-width:0;width:auto;table-layout:auto}
+table.ledger.bento-table th,table.ledger.bento-table td{padding:2px 1px;text-align:center}
+table.ledger.bento-table th:first-child,table.ledger.bento-table td:first-child{text-align:left;padding-left:4px;white-space:nowrap}
+table.ledger.bento-table th.bento-name-th{
+  writing-mode:vertical-rl;white-space:nowrap;
+  font-size:10.5px;font-weight:700;padding:5px 0 3px;vertical-align:bottom;
+}
 .order-cell{
-  width:100%;min-width:34px;min-height:32px;border-radius:6px;border:1px solid var(--border-strong);
-  background:var(--surface-2);font-family:var(--font-mono);font-weight:700;font-size:12.5px;color:var(--text);
+  width:100%;min-width:20px;min-height:26px;border-radius:5px;border:1px solid var(--border-strong);
+  background:var(--surface-2);font-family:var(--font-mono);font-weight:700;font-size:11px;color:var(--text);
   touch-action:none;padding:0;
 }
 .order-cell[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -2822,7 +2827,7 @@ function renderBentoOrderTable(y, m, dim, workers){
     return '<div class="panel"><p class="caption">弁当注文の対象作業者が設定されていません。マスター〉作業者 の「弁当注文」スイッチで設定してください。</p></div>';
   }
   var unitPrice = num(state.bentoSettings.unitPrice);
-  var headCells = workers.map(function(w){ return '<th>' + escapeHtml(w.name) + '</th>'; }).join('');
+  var headCells = workers.map(function(w){ return '<th class="bento-name-th">' + escapeHtml(w.name) + '</th>'; }).join('');
   var colTotals = {};
   workers.forEach(function(w){ colTotals[w.id] = 0; });
   var bodyRows = '';
