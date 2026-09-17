@@ -162,10 +162,11 @@ a{color:var(--accent)}
 .field{display:flex;flex-direction:column;gap:5px}
 .field[hidden]{display:none}
 .field label{font-size:12px;color:var(--text-muted);font-weight:600}
-.field input[type="text"],.field input[type="password"],.field input[type="number"],.field input[type="date"],.field select{
+.field input[type="text"],.field input[type="password"],.field input[type="number"],.field input[type="date"],.field select,.field textarea{
   border:1px solid var(--border-strong);border-radius:var(--radius-s);background:var(--surface-2);
   padding:9px 10px;min-height:40px;color:var(--text);width:100%;
 }
+.field textarea{font-family:inherit;font-size:13px;resize:vertical;line-height:1.5}
 .field input[type="date"]{max-width:140px;padding:9px 6px;font-size:13px}
 .field input:focus-visible,.field select:focus-visible{outline:2px solid var(--accent);outline-offset:0}
 .field-warn label{color:var(--red)}
@@ -295,6 +296,21 @@ table.ledger tfoot td{font-weight:700;background:var(--surface-2);border-top:1.5
 .dow-pill{padding:8px 12px;border-radius:99px;border:1px solid var(--border-strong);background:var(--surface-2);font-size:12.5px;font-weight:700}
 .dow-pill[aria-pressed="true"]{background:var(--red-soft);color:var(--red);border-color:var(--red)}
 
+/* ============ 弁当注文 ============ */
+.bento-banner{margin:10px 16px 0;background:var(--accent-soft);border-color:var(--accent-soft-strong)}
+.bento-banner p{margin:0}
+.bento-banner.closed{background:var(--surface-2);border-color:var(--border)}
+table.ledger.bento-table th,table.ledger.bento-table td{padding:4px 6px;text-align:center}
+table.ledger.bento-table th:first-child,table.ledger.bento-table td:first-child{text-align:left}
+.order-cell{
+  width:100%;min-width:34px;min-height:32px;border-radius:6px;border:1px solid var(--border-strong);
+  background:var(--surface-2);font-family:var(--font-mono);font-weight:700;font-size:12.5px;color:var(--text);
+  touch-action:none;padding:0;
+}
+.order-cell[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.order-cell.locked{opacity:.4}
+tr.bento-row-holiday td{background:var(--red-soft)}
+
 .gate-wrap{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 16px;gap:14px}
 .gate-wrap .icon{font-size:30px}
 
@@ -341,6 +357,7 @@ var DOW_LABELS = ['日','月','火','水','木','金','土'];
 var SALT = 'seiban-nippou-v1::';
 var TABS = [
   {id:'input', label:'入力'},
+  {id:'bento', label:'弁当'},
   {id:'travel', label:'旅費交通費精算'},
   {id:'master', label:'マスター'}
 ];
@@ -364,6 +381,7 @@ var FIELD_DEFS = [
 var CARRY_KEYS = ['overtime','late','paidLeave','absence','holidayWork']; // 20日締めで繰越対象
 var ZATSUYOU_CODE = '0';   // 「雑用その他」選択時は作業内容を手入力できる
 var MAEYAMA_CODE = '00';   // ドロップダウンでは常に一番下に表示する
+var SEED_BENTO_SETTINGS = {phone:'087-841-6000', unitPrice:280, subsidyPerUnit:140, notifyEmails:['anzai-keikin@mc.pikara.ne.jp','fullmonkey.anz@gmail.com'], cutoffHour:8, cutoffMinute:15};
 
 /* ================= state ================= */
 var state = {
@@ -385,6 +403,16 @@ var state = {
   monthDocUnsub: null,
   adminUnlocked: false,
   masterSection: 'workers',
+
+  bentoSettings: Object.assign({}, SEED_BENTO_SETTINGS),
+  bentoYM: null,        // {y,m} for 弁当タブの表示月
+  bentoDoc: null,       // 表示中の月の bentoOrders ドキュメント {days:{...}, invoiceAmount}
+  bentoDocUnsub: null,
+  bentoSelDate: null,   // 弁当タブの日付詳細パネルで選択中の日付(yyyy-mm-dd)
+  bentoDragActive: false,
+  bentoTodayDoc: null,  // 当日分の bentoOrders(バナー用・タブに関係なく常時購読)
+  bentoTodayUnsub: null,
+
   travelYM: null,      // {y,m} for 旅費交通費精算 view
   travelHeader: null,  // {staffName, prevBalance, advance}
   travelRows: [],       // [{id,date,itemCode,siteName,contractors,workers,summary,store,amount,mealArea,mealDinner}]
@@ -628,6 +656,12 @@ function startListeners(db){
     render();
   });
 
+  db.doc('settings/bento').onSnapshot(function(snap){
+    state.bentoSettings = Object.assign({}, SEED_BENTO_SETTINGS, snap.exists ? snap.data() : {});
+    render();
+  });
+  subscribeBentoToday();
+
   db.doc('settings/holiday').onSnapshot(function(snap){
     state.holidaySettings = snap.exists ? Object.assign({weeklyOff:[0,6]}, snap.data()) : {weeklyOff:[0,6]};
     render();
@@ -723,6 +757,7 @@ function computeCutoff(prevDoc, curDoc, y, m){
 
 /* ================= render root ================= */
 function render(){
+  if (state.bentoDragActive) return; // ドラッグ中は再描画でDOM/ポインタ捕捉を壊さない
   var app = document.getElementById('app');
 
   if (state.dbNotConfigured){
@@ -751,7 +786,9 @@ function render(){
   }
 
   var html = renderTopbar();
+  html += renderBentoBanner();
   if (state.view === 'input') html += renderInputView();
+  else if (state.view === 'bento') html += renderBentoView();
   else if (state.view === 'travel') html += renderTravelView();
   else if (state.view === 'summary') html += renderSummaryView();
   else html += renderMasterView();
@@ -841,6 +878,7 @@ function bindTopbar(){
     el.addEventListener('click', function(){
       state.view = el.getAttribute('data-tab');
       if (state.view === 'input' && state.workerId){ ensureInputYM(); subscribeMonthDoc(); }
+      if (state.view === 'bento'){ ensureBentoYM(); subscribeBentoMonth(); }
       if (state.view === 'travel'){ ensureTravelYM(); subscribeTravelMonth(); }
       render();
     });
@@ -2438,6 +2476,7 @@ function renderMasterView(){
   var secTabs = [
     {id:'workers', label:'作業者'},
     {id:'items', label:'作業内容(製番)'},
+    {id:'bento', label:'弁当設定'},
     {id:'holiday', label:'休日設定'},
     {id:'travel', label:'旅費交通費マスター'},
     {id:'summary', label:'集計'},
@@ -2449,6 +2488,7 @@ function renderMasterView(){
   var body = '';
   if (state.masterSection==='workers') body = renderMasterWorkers();
   else if (state.masterSection==='items') body = renderMasterItems();
+  else if (state.masterSection==='bento') body = renderMasterBentoSettings();
   else if (state.masterSection==='holiday') body = renderMasterHoliday();
   else if (state.masterSection==='travel') body = renderMasterTravel();
   else if (state.masterSection==='summary') body = renderSummaryView();
@@ -2466,9 +2506,10 @@ function renderMasterView(){
 function renderMasterWorkers(){
   var rows = state.workers.slice().sort(function(a,b){return (a.order||0)-(b.order||0);}).map(function(w){
     return (
-      '<div class="list-row">' +
+      '<div class="list-row" style="flex-wrap:wrap;row-gap:6px">' +
         '<span class="name">'+escapeHtml(w.name)+'</span>' +
-        '<button class="switch" role="switch" aria-checked="'+(w.active!==false)+'" data-toggle-worker="'+w.id+'"></button>' +
+        '<span style="display:inline-flex;align-items:center;gap:5px"><span class="caption">稼働</span><button class="switch" role="switch" aria-checked="'+(w.active!==false)+'" data-toggle-worker="'+w.id+'"></button></span>' +
+        '<span style="display:inline-flex;align-items:center;gap:5px"><span class="caption">弁当注文</span><button class="switch" role="switch" aria-checked="'+(w.bento!==false)+'" data-toggle-bento="'+w.id+'"></button></span>' +
         '<button class="btn btn-sm btn-danger" data-del-worker="'+w.id+'">削除</button>' +
       '</div>'
     );
@@ -2514,6 +2555,28 @@ function renderMasterItems(){
         '<div class="field"><label>名称</label><input type="text" id="newItemName" placeholder="例）〇〇工事"></div>' +
         '<button class="btn btn-primary" data-act="add-item" style="align-self:end;height:40px">追加</button>' +
       '</div>' +
+    '</div>'
+  );
+}
+function renderMasterBentoSettings(){
+  var s = state.bentoSettings;
+  var emails = (s.notifyEmails||[]).join('\n');
+  var cutoffValue = pad2(num(s.cutoffHour)) + ':' + pad2(num(s.cutoffMinute));
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>弁当設定</h2></div>' +
+      '<div class="field"><label>お弁当屋さんの電話番号</label><input type="text" id="bentoPhoneInput" value="'+escapeHtml(s.phone)+'"></div>' +
+      '<div class="field-row" style="margin-top:10px">' +
+        '<div class="field"><label>社員負担単価（円）</label><input type="number" class="num-input" id="bentoUnitPriceInput" value="'+num(s.unitPrice)+'"></div>' +
+        '<div class="field"><label>会社負担単価（円）</label><input type="number" class="num-input" id="bentoSubsidyInput" value="'+num(s.subsidyPerUnit)+'"></div>' +
+      '</div>' +
+      '<div class="field" style="margin-top:10px;max-width:160px"><label>注文の締め切り時刻</label><input type="time" id="bentoCutoffInput" value="'+cutoffValue+'"></div>' +
+      '<div class="field" style="margin-top:10px">' +
+        '<label>定時メール通知の送信先（1行に1件、または カンマ区切り）</label>' +
+        '<textarea id="bentoNotifyEmailsInput" rows="3" placeholder="例）anzai-keikin@mc.pikara.ne.jp">'+escapeHtml(emails)+'</textarea>' +
+      '</div>' +
+      '<p class="caption" style="margin-top:8px">毎朝、上記の締め切り時刻の直後に、休日でなく合計個数が1以上の日だけ、上記の送信先に内訳をメール送信します。</p>' +
+      '<button class="btn btn-primary" style="margin-top:12px" data-act="save-bento-settings">保存</button>' +
     '</div>'
   );
 }
@@ -2607,9 +2670,509 @@ function renderMasterSecurity(){
   );
 }
 
+/* ================= BENTO (弁当注文) ================= */
+function todayStr(){ return ymd(TODAY.y, TODAY.m, TODAY.d); }
+function activeBentoWorkers(){
+  return state.workers.filter(function(w){ return w.active!==false && w.bento!==false; })
+    .sort(function(a,b){ return (a.order||0)-(b.order||0); });
+}
+function bentoMonthKey(y,m){ return yyyymm(y,m); }
+function getBentoDay(doc, day){
+  var key = pad2(day);
+  if (doc && doc.days && doc.days[key]) return doc.days[key];
+  return {};
+}
+function bentoDayTotal(dayMap){
+  var t = 0;
+  Object.keys(dayMap||{}).forEach(function(k){ t += num(dayMap[k]); });
+  return t;
+}
+function bentoLockState(dateStr){
+  if (state.adminUnlocked) return {locked:false};
+  if (isHoliday(dateStr)) return {locked:true, reason:'holiday'};
+  var t = todayStr();
+  if (dateStr < t) return {locked:true, reason:'past'};
+  if (dateStr === t){
+    var now = new Date();
+    var nowMin = now.getHours()*60 + now.getMinutes();
+    var cutoffMin = num(state.bentoSettings.cutoffHour)*60 + num(state.bentoSettings.cutoffMinute);
+    if (nowMin >= cutoffMin) return {locked:true, reason:'cutoff'};
+  }
+  return {locked:false};
+}
+function bentoLockMessage(reason){
+  if (reason==='holiday') return '休日は注文できません（管理者ロック解除で編集可）';
+  if (reason==='past') return '過去の日付は編集できません（管理者ロック解除で編集可）';
+  if (reason==='cutoff') return '本日の注文受付は締め切りました（管理者ロック解除で編集可）';
+  return '編集できません（管理者ロック解除で編集可）';
+}
+function ensureBentoYM(){ if (!state.bentoYM) state.bentoYM = {y:TODAY.y, m:TODAY.m}; }
+function ensureBentoSelDate(){
+  if (state.bentoSelDate) return;
+  if (state.bentoYM.y===TODAY.y && state.bentoYM.m===TODAY.m) state.bentoSelDate = todayStr();
+}
+function subscribeBentoMonth(){
+  if (state.bentoDocUnsub){ state.bentoDocUnsub(); state.bentoDocUnsub = null; }
+  state.bentoDoc = null;
+  if (!state.db || !state.bentoYM){ render(); return; }
+  var id = bentoMonthKey(state.bentoYM.y, state.bentoYM.m);
+  state.bentoDocUnsub = state.db.doc('bentoOrders/' + id).onSnapshot(function(snap){
+    if (state.bentoDragActive) return;
+    state.bentoDoc = snap.exists ? snap.data() : {days:{}};
+    render();
+  });
+}
+function subscribeBentoToday(){
+  if (!state.db) return;
+  if (state.bentoTodayUnsub){ state.bentoTodayUnsub(); state.bentoTodayUnsub = null; }
+  var id = bentoMonthKey(TODAY.y, TODAY.m);
+  state.bentoTodayUnsub = state.db.doc('bentoOrders/' + id).onSnapshot(function(snap){
+    state.bentoTodayDoc = snap.exists ? snap.data() : {days:{}};
+    render();
+  });
+}
+function applyBentoLocal(doc, key, workerId, qty){
+  if (!doc.days) doc.days = {};
+  if (!doc.days[key]) doc.days[key] = {};
+  doc.days[key][workerId] = qty;
+}
+function saveBentoQty(dateStr, workerId, qty, silent){
+  var parts = dateStr.split('-');
+  var y = +parts[0], m = +parts[1], d = +parts[2];
+  var key = pad2(d);
+  var id = bentoMonthKey(y,m);
+
+  // 楽観的更新: サーバー応答を待たず、画面にはすぐ反映する
+  if (!state.bentoDoc) state.bentoDoc = {days:{}};
+  applyBentoLocal(state.bentoDoc, key, workerId, qty);
+  if (dateStr === todayStr()){
+    if (!state.bentoTodayDoc) state.bentoTodayDoc = {days:{}};
+    applyBentoLocal(state.bentoTodayDoc, key, workerId, qty);
+  }
+
+  if (!state.db) return Promise.resolve();
+  var ref = state.db.doc('bentoOrders/' + id);
+  return ref.get().then(function(snap){
+    if (!snap.exists){
+      var days = {}; days[key] = {}; days[key][workerId] = qty;
+      return ref.set({yyyymm:id, days:days, updatedAt:Date.now()});
+    } else {
+      var patch = {updatedAt: Date.now()};
+      patch['days.' + key + '.' + workerId] = qty;
+      return ref.update(patch);
+    }
+  }).then(function(){
+    if (!silent) toast('注文を保存しました');
+  }).catch(function(){
+    toast('保存に失敗しました', true);
+    // ローカルの楽観的表示を破棄し、サーバーの状態を取り直す
+    subscribeBentoMonth();
+    if (dateStr === todayStr()) subscribeBentoToday();
+  });
+}
+function computeTodayBentoInfo(){
+  var dateStr = todayStr();
+  if (isHoliday(dateStr)) return {show:false};
+  var dayMap = getBentoDay(state.bentoTodayDoc, TODAY.d);
+  var total = bentoDayTotal(dayMap);
+  if (total <= 0) return {show:false};
+  var now = new Date();
+  var nowMin = now.getHours()*60 + now.getMinutes();
+  var cutoffMin = num(state.bentoSettings.cutoffHour)*60 + num(state.bentoSettings.cutoffMinute);
+  return {show:true, total:total, closed: nowMin >= cutoffMin};
+}
+function renderBentoBanner(){
+  var info = computeTodayBentoInfo();
+  if (!info.show) return '';
+  var phone = state.bentoSettings.phone || '';
+  var telHref = 'tel:' + phone.replace(/[^0-9+]/g, '');
+  if (info.closed){
+    return (
+      '<div class="panel bento-banner closed"><p class="caption">🍱 本日の弁当 合計' + info.total + '個・注文受付は締め切りました</p></div>'
+    );
+  }
+  return (
+    '<div class="panel bento-banner">' +
+      '<p class="caption">🍱 本日の弁当 合計' + info.total + '個・' + num(state.bentoSettings.cutoffHour) + ':' + pad2(num(state.bentoSettings.cutoffMinute)) + 'までに注文してください</p>' +
+      '<a class="btn btn-primary btn-sm" style="margin-top:8px" href="' + telHref + '">電話する（' + escapeHtml(phone) + '）</a>' +
+    '</div>'
+  );
+}
+function renderBentoDaySummary(workers){
+  if (!state.bentoSelDate) return '';
+  var dateStr = state.bentoSelDate;
+  var parts = dateStr.split('-');
+  var d = +parts[2];
+  var dow = DOW_LABELS[dowOf(dateStr)];
+  var dayMap = getBentoDay(state.bentoDoc, d);
+  var total = bentoDayTotal(dayMap);
+  var orderers = workers.filter(function(w){ return num(dayMap[w.id]) > 0; })
+    .map(function(w){ return escapeHtml(w.name) + '：' + num(dayMap[w.id]) + '個'; });
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>' + (+parts[1]) + '月' + d + '日（' + dow + '）の弁当</h2>' +
+        '<span class="total-badge">' + total + ' 個</span>' +
+      '</div>' +
+      (orderers.length ? '<p class="caption">' + orderers.join('　') + '</p>' : '<p class="caption">この日の注文はありません</p>') +
+    '</div>'
+  );
+}
+function renderBentoOrderTable(y, m, dim, workers){
+  if (!workers.length){
+    return '<div class="panel"><p class="caption">弁当注文の対象作業者が設定されていません。マスター〉作業者 の「弁当注文」スイッチで設定してください。</p></div>';
+  }
+  var unitPrice = num(state.bentoSettings.unitPrice);
+  var headCells = workers.map(function(w){ return '<th>' + escapeHtml(w.name) + '</th>'; }).join('');
+  var colTotals = {};
+  workers.forEach(function(w){ colTotals[w.id] = 0; });
+  var bodyRows = '';
+  for (var d=1; d<=dim; d++){
+    var dateStr = ymd(y,m,d);
+    var dayMap = getBentoDay(state.bentoDoc, d);
+    var lock = bentoLockState(dateStr);
+    var rowTotal = 0;
+    var cellsHtml = workers.map(function(w){
+      var qty = num(dayMap[w.id]);
+      rowTotal += qty;
+      colTotals[w.id] += qty;
+      return '<td><button type="button" class="order-cell' + (lock.locked ? ' locked' : '') + '" data-order-date="' + dateStr + '" data-order-worker="' + w.id + '" aria-pressed="' + (qty>0) + '">' + (qty>0?qty:'') + '</button></td>';
+    }).join('');
+    bodyRows += '<tr' + (isHoliday(dateStr) ? ' class="bento-row-holiday"' : '') + '><td>' + d + '（' + DOW_LABELS[dowOf(dateStr)] + '）</td>' + cellsHtml + '<td class="mono">' + (rowTotal||'') + '</td></tr>';
+  }
+  var grandTotal = 0;
+  var totalFoodCells = workers.map(function(w){ grandTotal += colTotals[w.id]; return '<td>' + (colTotals[w.id]||'') + '</td>'; }).join('');
+  var totalYenCells = workers.map(function(w){ return '<td>¥' + (colTotals[w.id]*unitPrice).toLocaleString() + '</td>'; }).join('');
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>注文一覧</h2></div>' +
+      '<p class="caption" style="margin-bottom:10px">マスをタップ、または押したままなぞると複数のマスをまとめてON/OFFできます。</p>' +
+      '<div class="table-scroll order-table-wrap"><table class="ledger bento-table">' +
+        '<thead><tr><th>日付</th>' + headCells + '<th>合計</th></tr></thead>' +
+        '<tbody>' + bodyRows + '</tbody>' +
+        '<tfoot>' +
+          '<tr><td>合計/食</td>' + totalFoodCells + '<td>' + (grandTotal||'') + '</td></tr>' +
+          '<tr><td>合計/円</td>' + totalYenCells + '<td>¥' + (grandTotal*unitPrice).toLocaleString() + '</td></tr>' +
+        '</tfoot>' +
+      '</table></div>' +
+      '<div class="btn-row" style="margin-top:12px">' +
+        '<button class="btn" data-act="export-bento-orders">注文一覧をExcelで出力</button>' +
+      '</div>' +
+    '</div>'
+  );
+}
+function exportBentoOrdersExcel(y, m, dim, workers){
+  if (typeof ExcelJS === 'undefined'){ toast('Excel出力ライブラリの読み込みに失敗しました', true); return; }
+  if (!workers.length){ toast('弁当注文の対象作業者がいません', true); return; }
+  var unitPrice = num(state.bentoSettings.unitPrice);
+  var colCount = 2 + workers.length; // 日付列 + 作業者列 + 合計列
+
+  var wb = new ExcelJS.Workbook();
+  var ws = wb.addWorksheet(safeSheetName(y + '年' + m + '月弁当注文', '弁当注文'));
+  ws.columns = [{width:14}].concat(workers.map(function(){ return {width:10}; }), [{width:10}]);
+
+  ws.mergeCells(1,1,1,colCount);
+  ws.getCell(1,1).value = y + '年' + m + '月　弁当注文一覧';
+  ws.getCell(1,1).font = {bold:true, size:13};
+
+  var headerRowIdx = 3;
+  ws.getRow(headerRowIdx).values = ['日付'].concat(workers.map(function(w){ return w.name; }), ['合計']);
+  ws.getRow(headerRowIdx).font = {bold:true};
+  headerFill(ws, headerRowIdx, 1, headerRowIdx, colCount);
+
+  var colTotals = {};
+  workers.forEach(function(w){ colTotals[w.id] = 0; });
+  var r = headerRowIdx;
+  for (var d=1; d<=dim; d++){
+    r++;
+    var dateStr = ymd(y,m,d);
+    var dayMap = getBentoDay(state.bentoDoc, d);
+    var rowTotal = 0;
+    ws.getCell(r,1).value = m + '/' + d + '（' + DOW_LABELS[dowOf(dateStr)] + '）';
+    workers.forEach(function(w, i){
+      var qty = num(dayMap[w.id]);
+      rowTotal += qty;
+      colTotals[w.id] += qty;
+      if (qty > 0) ws.getCell(r, 2+i).value = qty; // 個数なしのマスは空欄のまま
+    });
+    ws.getCell(r, colCount).value = rowTotal; // 行合計はゼロでも数値で表示
+  }
+
+  var grandTotal = 0;
+  r++;
+  ws.getCell(r,1).value = '合計/食';
+  ws.getCell(r,1).font = {bold:true};
+  workers.forEach(function(w, i){
+    grandTotal += colTotals[w.id];
+    ws.getCell(r, 2+i).value = colTotals[w.id]; // 合計はゼロでも数値で表示
+  });
+  ws.getCell(r, colCount).value = grandTotal;
+
+  var moneyRow = r + 1;
+  ws.getCell(moneyRow,1).value = '合計/円';
+  ws.getCell(moneyRow,1).font = {bold:true};
+  workers.forEach(function(w, i){
+    var cell = ws.getCell(moneyRow, 2+i);
+    cell.value = colTotals[w.id] * unitPrice;
+    cell.numFmt = '"¥"#,##0';
+  });
+  var grandMoneyCell = ws.getCell(moneyRow, colCount);
+  grandMoneyCell.value = grandTotal * unitPrice;
+  grandMoneyCell.numFmt = '"¥"#,##0';
+
+  applyBorder(ws, headerRowIdx, 1, moneyRow, colCount);
+
+  downloadWorkbook(wb, '弁当注文一覧_' + y + pad2(m) + '.xlsx');
+}
+function renderBentoMonthSummary(dim){
+  var totalQty = 0;
+  for (var d=1; d<=dim; d++) totalQty += bentoDayTotal(getBentoDay(state.bentoDoc, d));
+  var unitPrice = num(state.bentoSettings.unitPrice);
+  var subsidyPerUnit = num(state.bentoSettings.subsidyPerUnit);
+  var staffAmount = totalQty * unitPrice;
+  var subsidyAmount = totalQty * subsidyPerUnit;
+  var totalAmount = staffAmount + subsidyAmount;
+  var hasInvoice = state.bentoDoc && state.bentoDoc.invoiceAmount !== undefined && state.bentoDoc.invoiceAmount !== null && state.bentoDoc.invoiceAmount !== '';
+  var invoice = hasInvoice ? num(state.bentoDoc.invoiceAmount) : '';
+  var match = hasInvoice && invoice === totalAmount;
+  var diff = hasInvoice ? (invoice - totalAmount) : 0;
+  return (
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>金額チェック</h2></div>' +
+      '<div class="btn-row" style="flex-wrap:wrap;gap:14px;margin-bottom:12px">' +
+        '<div><div class="caption">合計個数</div><div class="mono" style="font-size:18px;font-weight:700">' + totalQty + ' 個</div></div>' +
+        '<div><div class="caption">社員負担額合計</div><div class="mono" style="font-size:18px;font-weight:700">¥' + staffAmount.toLocaleString() + '</div></div>' +
+        '<div><div class="caption">会社負担額合計</div><div class="mono" style="font-size:18px;font-weight:700">¥' + subsidyAmount.toLocaleString() + '</div></div>' +
+        '<div><div class="caption">合計金額(社員負担＋会社負担)</div><div class="mono" style="font-size:18px;font-weight:700;color:var(--accent-strong)">¥' + totalAmount.toLocaleString() + '</div></div>' +
+      '</div>' +
+      '<div class="field" style="max-width:220px"><label>弁当屋の請求金額</label><input type="number" class="num-input" id="bentoInvoiceInput" value="' + (hasInvoice?invoice:'') + '"></div>' +
+      (hasInvoice ? (
+        match
+          ? '<div style="margin-top:10px"><span class="chip chip-green">一致</span></div>'
+          : '<div style="margin-top:10px"><span class="chip chip-red">預り金精算不一致</span><p class="caption" style="margin-top:4px">差額：¥' + diff.toLocaleString() + '</p></div>'
+      ) : '') +
+    '</div>'
+  );
+}
+function renderBentoView(){
+  ensureBentoYM();
+  if (!state.bentoDoc && !state.bentoDocUnsub) subscribeBentoMonth();
+  ensureBentoSelDate();
+  var y = state.bentoYM.y, m = state.bentoYM.m;
+  var dim = daysInMonth(y,m);
+  var firstDow = dowOf(ymd(y,m,1));
+  var workers = activeBentoWorkers();
+
+  var cells = '';
+  for (var i=0;i<firstDow;i++) cells += '<div class="day-cell off"></div>';
+  for (var d=1; d<=dim; d++){
+    var dateStr = ymd(y,m,d);
+    var dayMap = getBentoDay(state.bentoDoc, d);
+    var total = bentoDayTotal(dayMap);
+    var cls = 'day-cell';
+    if (isHoliday(dateStr)) cls += ' holiday';
+    if (dateStr === todayStr()) cls += ' today';
+    if (dateStr === state.bentoSelDate) cls += ' selected';
+    if (total > 0) cls += ' has-entry';
+    cells += '<div class="' + cls + '" data-bento-day="' + d + '"><span class="dnum">' + d + '</span>' +
+      (total > 0 ? '<span class="dhour">' + total + '個</span>' : '') + '</div>';
+  }
+  var dowRow = DOW_LABELS.map(function(l){ return '<div class="dow">' + l + '</div>'; }).join('');
+  var deadlineNotice = '<p class="caption" style="font-weight:700;color:var(--accent-strong);margin:0 2px">🍱 弁当注文の締め切りは当日の' + num(state.bentoSettings.cutoffHour) + '時' + (num(state.bentoSettings.cutoffMinute) ? num(state.bentoSettings.cutoffMinute)+'分' : '') + 'まで</p>';
+
+  if (!state.db || state.bentoDoc === null){
+    return (
+      '<div class="view stack">' +
+        deadlineNotice +
+        '<div class="panel"><div class="month-nav">' +
+          '<button class="icon-btn" data-act="bento-prev-month">‹</button>' +
+          '<span class="label">' + y + '年 ' + m + '月</span>' +
+          '<button class="icon-btn" data-act="bento-next-month">›</button>' +
+        '</div><div class="day-grid">' + dowRow + cells + '</div></div>' +
+        '<div class="panel"><p class="caption">読み込んでいます…</p></div>' +
+      '</div>'
+    );
+  }
+
+  return (
+    '<div class="view stack">' +
+      deadlineNotice +
+      '<div class="panel">' +
+        '<div class="month-nav">' +
+          '<button class="icon-btn" data-act="bento-prev-month">‹</button>' +
+          '<span class="label">' + y + '年 ' + m + '月</span>' +
+          '<div style="display:flex;gap:8px">' +
+            '<button class="icon-btn" data-act="bento-next-month">›</button>' +
+            '<button class="icon-btn" data-act="bento-admin-toggle" title="' + (state.adminUnlocked?'管理者ロックを戻す':'管理者ロック解除') + '">' + (state.adminUnlocked?'🔓':'🔒') + '</button>' +
+          '</div>' +
+        '</div>' +
+        (state.adminUnlocked ? '<p class="caption" style="margin-top:8px">🔓 管理者モード解除中（休日・過去日・締切後もすべて編集できます）</p>' : '') +
+        '<div class="day-grid">' + dowRow + cells + '</div>' +
+      '</div>' +
+      renderBentoDaySummary(workers) +
+      renderBentoOrderTable(y, m, dim, workers) +
+      renderBentoMonthSummary(dim) +
+    '</div>'
+  );
+}
+function bindBentoOrderTable(){
+  var cells = document.querySelectorAll('.order-cell');
+  if (!cells.length) return;
+  var touched = {};
+  var changedCount = 0;
+  var dragValue = 1;
+
+  function cellFromPoint(x, y){
+    var el = document.elementFromPoint(x, y);
+    return el ? el.closest('.order-cell') : null;
+  }
+  function applyToCell(cell){
+    if (!cell) return;
+    var dateStr = cell.getAttribute('data-order-date');
+    var workerId = cell.getAttribute('data-order-worker');
+    var key = dateStr + '|' + workerId;
+    if (touched[key]) return;
+    touched[key] = true;
+    var lock = bentoLockState(dateStr);
+    if (lock.locked){ toast(bentoLockMessage(lock.reason), true); return; }
+    cell.setAttribute('aria-pressed', dragValue > 0 ? 'true' : 'false');
+    cell.textContent = dragValue > 0 ? String(dragValue) : '';
+    changedCount++;
+    saveBentoQty(dateStr, workerId, dragValue, true);
+  }
+  function endDrag(){
+    if (!state.bentoDragActive) return;
+    state.bentoDragActive = false;
+    if (changedCount > 1) toast(changedCount + '件を更新しました');
+    else if (changedCount === 1) toast('注文を保存しました');
+    render();
+  }
+
+  cells.forEach(function(cell){
+    cell.addEventListener('pointerdown', function(e){
+      var dateStr = cell.getAttribute('data-order-date');
+      var lock = bentoLockState(dateStr);
+      if (lock.locked){ toast(bentoLockMessage(lock.reason), true); return; }
+      touched = {};
+      changedCount = 0;
+      dragValue = (cell.getAttribute('aria-pressed') === 'true') ? 0 : 1;
+      state.bentoDragActive = true;
+      try { cell.setPointerCapture(e.pointerId); } catch(err){}
+      applyToCell(cell);
+    });
+    cell.addEventListener('pointermove', function(e){
+      if (!state.bentoDragActive) return;
+      applyToCell(cellFromPoint(e.clientX, e.clientY));
+    });
+    cell.addEventListener('pointerup', endDrag);
+    cell.addEventListener('pointercancel', endDrag);
+  });
+  document.addEventListener('pointerup', endDrag);
+}
+function openBentoAdminModal(){
+  if (!state._adminDoc){
+    openModal(
+      '<h3 style="margin-bottom:8px;font-size:15.5px">管理者パスワードの初期設定</h3>' +
+      '<p class="caption" style="margin-bottom:12px">マスター編集用の簡易パスワードを設定してください（マスター画面と共通です）。</p>' +
+      '<div class="field" style="margin-bottom:10px"><input type="password" id="bentoPwSetup1" placeholder="新しいパスワード"></div>' +
+      '<div class="field"><input type="password" id="bentoPwSetup2" placeholder="確認のため再入力"></div>' +
+      '<div class="btn-row" style="margin-top:16px">' +
+        '<button class="btn" data-act="modal-cancel" style="flex:1">キャンセル</button>' +
+        '<button class="btn btn-primary" data-act="bento-admin-setup" style="flex:1">設定する</button>' +
+      '</div>'
+    );
+    document.querySelector('[data-act="modal-cancel"]').addEventListener('click', closeModal);
+    document.querySelector('[data-act="bento-admin-setup"]').addEventListener('click', function(){
+      var p1 = document.getElementById('bentoPwSetup1').value;
+      var p2 = document.getElementById('bentoPwSetup2').value;
+      if (!p1 || p1.length < 3){ toast('3文字以上で入力してください', true); return; }
+      if (p1 !== p2){ toast('パスワードが一致しません', true); return; }
+      sha256Hex(p1).then(function(hash){
+        return state.db.doc('settings/admin').set({passwordHash: hash, updatedAt: Date.now()});
+      }).then(function(){
+        state._adminDoc = {passwordHash:true};
+        state.adminUnlocked = true;
+        closeModal();
+        toast('パスワードを設定し、ロックを解除しました');
+        render();
+      });
+    });
+    return;
+  }
+  openModal(
+    '<h3 style="margin-bottom:8px;font-size:15.5px">管理者ロック解除</h3>' +
+    '<p class="caption" style="margin-bottom:12px">管理者パスワード（マスター画面と共通）を入力してください。解除中は休日・過去日・締切後もすべて編集できます。</p>' +
+    '<div class="field"><input type="password" id="bentoPwLogin" placeholder="パスワード"></div>' +
+    '<div class="btn-row" style="margin-top:16px">' +
+      '<button class="btn" data-act="modal-cancel" style="flex:1">キャンセル</button>' +
+      '<button class="btn btn-primary" data-act="bento-admin-login" style="flex:1">解除する</button>' +
+    '</div>'
+  );
+  document.querySelector('[data-act="modal-cancel"]').addEventListener('click', closeModal);
+  document.querySelector('[data-act="bento-admin-login"]').addEventListener('click', function(){
+    var pw = document.getElementById('bentoPwLogin').value;
+    sha256Hex(pw).then(function(hash){
+      state.db.doc('settings/admin').get().then(function(snap){
+        var d = snap.data();
+        if (d && d.passwordHash === hash){
+          state.adminUnlocked = true;
+          closeModal();
+          toast('ロックを解除しました');
+          render();
+        } else {
+          toast('パスワードが違います', true);
+        }
+      });
+    });
+  });
+}
+function bindBentoView(){
+  var prevM = document.querySelector('[data-act="bento-prev-month"]');
+  var nextM = document.querySelector('[data-act="bento-next-month"]');
+  if (prevM) prevM.addEventListener('click', function(){ state.bentoYM = prevMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate = null; subscribeBentoMonth(); render(); });
+  if (nextM) nextM.addEventListener('click', function(){ state.bentoYM = nextMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate = null; subscribeBentoMonth(); render(); });
+
+  var adminToggleBtn = document.querySelector('[data-act="bento-admin-toggle"]');
+  if (adminToggleBtn) adminToggleBtn.addEventListener('click', function(){
+    if (state.adminUnlocked){
+      state.adminUnlocked = false;
+      toast('管理者ロックを戻しました');
+      render();
+    } else {
+      openBentoAdminModal();
+    }
+  });
+
+  document.querySelectorAll('[data-bento-day]').forEach(function(el){
+    el.addEventListener('click', function(){
+      state.bentoSelDate = ymd(state.bentoYM.y, state.bentoYM.m, +el.getAttribute('data-bento-day'));
+      render();
+    });
+  });
+
+  var exportBentoBtn = document.querySelector('[data-act="export-bento-orders"]');
+  if (exportBentoBtn) exportBentoBtn.addEventListener('click', function(){
+    exportBentoOrdersExcel(state.bentoYM.y, state.bentoYM.m, daysInMonth(state.bentoYM.y, state.bentoYM.m), activeBentoWorkers());
+  });
+
+  var invoiceInput = document.getElementById('bentoInvoiceInput');
+  if (invoiceInput) invoiceInput.addEventListener('change', function(){
+    if (!state.db || !state.bentoYM) return;
+    var id = bentoMonthKey(state.bentoYM.y, state.bentoYM.m);
+    var v = invoiceInput.value === '' ? null : num(invoiceInput.value);
+    var ref = state.db.doc('bentoOrders/' + id);
+    ref.get().then(function(snap){
+      if (!snap.exists) return ref.set({yyyymm:id, days:{}, invoiceAmount:v, updatedAt:Date.now()});
+      return ref.update({invoiceAmount:v, updatedAt:Date.now()});
+    }).then(function(){ toast('保存しました'); });
+  });
+
+  bindBentoOrderTable();
+}
+
 /* ================= bind view events ================= */
 function bindView(){
   if (state.view === 'input') bindInputView();
+  else if (state.view === 'bento') bindBentoView();
   else if (state.view === 'travel') bindTravelView();
   else if (state.view === 'summary') bindSummaryView();
   else bindMasterView();
@@ -2876,6 +3439,29 @@ function bindMasterView(){
       var id = el.getAttribute('data-toggle-worker');
       var w = state.workers.find(function(x){return x.id===id;});
       state.db.collection('workers').doc(id).update({active: !(w.active!==false)});
+    });
+  });
+  document.querySelectorAll('[data-toggle-bento]').forEach(function(el){
+    el.addEventListener('click', function(){
+      var id = el.getAttribute('data-toggle-bento');
+      var w = state.workers.find(function(x){return x.id===id;});
+      state.db.collection('workers').doc(id).update({bento: !(w.bento!==false)});
+    });
+  });
+  var saveBentoSettingsBtn = document.querySelector('[data-act="save-bento-settings"]');
+  if (saveBentoSettingsBtn) saveBentoSettingsBtn.addEventListener('click', function(){
+    var phone = (document.getElementById('bentoPhoneInput').value||'').trim();
+    var unitPrice = num(document.getElementById('bentoUnitPriceInput').value);
+    var subsidyPerUnit = num(document.getElementById('bentoSubsidyInput').value);
+    var notifyEmails = (document.getElementById('bentoNotifyEmailsInput').value||'')
+      .split(/[\n,]+/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+    var cutoffRaw = (document.getElementById('bentoCutoffInput').value||'').split(':');
+    var cutoffHour = cutoffRaw.length===2 ? (+cutoffRaw[0]) : num(state.bentoSettings.cutoffHour);
+    var cutoffMinute = cutoffRaw.length===2 ? (+cutoffRaw[1]) : num(state.bentoSettings.cutoffMinute);
+    if (!phone){ toast('電話番号を入力してください', true); return; }
+    if (!isFinite(cutoffHour) || !isFinite(cutoffMinute)){ toast('締め切り時刻を入力してください', true); return; }
+    state.db.doc('settings/bento').set({phone:phone, unitPrice:unitPrice, subsidyPerUnit:subsidyPerUnit, notifyEmails:notifyEmails, cutoffHour:cutoffHour, cutoffMinute:cutoffMinute}, {merge:true}).then(function(){
+      toast('保存しました');
     });
   });
   document.querySelectorAll('[data-del-worker]').forEach(function(el){
