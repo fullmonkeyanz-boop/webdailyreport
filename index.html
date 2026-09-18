@@ -307,6 +307,8 @@ table.ledger.bento-table th.bento-name-th{
   writing-mode:vertical-rl;white-space:nowrap;
   font-size:10.5px;font-weight:700;padding:5px 0 3px;vertical-align:bottom;
 }
+.order-table-wrap{max-height:58vh;overflow-y:auto}
+table.ledger.bento-table thead th{position:sticky;top:0;z-index:5;box-shadow:0 1px 0 var(--border)}
 .order-cell{
   width:100%;min-width:20px;min-height:26px;border-radius:5px;border:1px solid var(--border-strong);
   background:var(--surface-2);font-family:var(--font-mono);font-weight:700;font-size:11px;color:var(--text);
@@ -315,7 +317,7 @@ table.ledger.bento-table th.bento-name-th{
 table.ledger.bento-table td.bento-yen-cell{font-size:8px;letter-spacing:-.02em;white-space:nowrap;padding-left:1px;padding-right:1px;border-right:1px solid var(--border)}
 table.ledger.bento-table td.bento-yen-cell:last-child{border-right:none}
 .order-cell[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
-.order-cell.locked{opacity:.4}
+.order-cell.locked{opacity:.4;pointer-events:none}
 tr.bento-row-holiday td{background:var(--red-soft)}
 
 .gate-wrap{display:flex;flex-direction:column;align-items:center;text-align:center;padding:36px 16px;gap:14px}
@@ -583,7 +585,7 @@ function sha256Hex(text){
 }
 
 /* ================= db bootstrap ================= */
-var SEED_WORKERS = ['木村秀美','三好','大須賀','塩井','松村','矢嶋','樋笠正直','樋笠正道','樋笠幸三','木村勲','佐々木'];
+var SEED_WORKERS = ['木村秀美','三好','松村','塩井','大須賀','矢嶋','樋笠正直','樋笠正道','樋笠幸三','木村勲','佐々木'];
 var SEED_ITEMS = [{code:'1',name:'工務一般'},{code:'0',name:'雑用その他'},{code:'00',name:'前山'}];
 
 function initDb(){
@@ -2511,9 +2513,14 @@ function renderMasterView(){
 }
 
 function renderMasterWorkers(){
-  var rows = state.workers.slice().sort(function(a,b){return (a.order||0)-(b.order||0);}).map(function(w){
+  var sorted = state.workers.slice().sort(function(a,b){return (a.order||0)-(b.order||0);});
+  var rows = sorted.map(function(w, i){
     return (
       '<div class="list-row" style="flex-wrap:wrap;row-gap:6px">' +
+        '<span style="display:inline-flex;flex-direction:column;gap:0">' +
+          '<button class="btn btn-sm" style="padding:1px 6px;line-height:1.1"'+(i===0?' disabled':'')+' data-worker-move-up="'+w.id+'">▲</button>' +
+          '<button class="btn btn-sm" style="padding:1px 6px;line-height:1.1"'+(i===sorted.length-1?' disabled':'')+' data-worker-move-down="'+w.id+'">▼</button>' +
+        '</span>' +
         '<span class="name">'+escapeHtml(w.name)+'</span>' +
         '<span style="display:inline-flex;align-items:center;gap:5px"><span class="caption">稼働</span><button class="switch" role="switch" aria-checked="'+(w.active!==false)+'" data-toggle-worker="'+w.id+'"></button></span>' +
         '<span style="display:inline-flex;align-items:center;gap:5px"><span class="caption">弁当注文</span><button class="switch" role="switch" aria-checked="'+(w.bento!==false)+'" data-toggle-bento="'+w.id+'"></button></span>' +
@@ -2524,6 +2531,7 @@ function renderMasterWorkers(){
   return (
     '<div class="panel">' +
       '<div class="panel-head"><h2>作業者マスター</h2></div>' +
+      '<p class="caption" style="margin-bottom:10px">▲▼で並び順を変更できます（弁当タブの注文一覧などの表示順に反映されます）。</p>' +
       '<div class="stack" style="gap:0">'+rows+'</div>' +
       '<hr class="divider" style="margin:14px 0">' +
       '<div class="item-row" style="grid-template-columns:1fr auto">' +
@@ -3040,7 +3048,7 @@ function bindBentoOrderTable(){
     if (touched[key]) return;
     touched[key] = true;
     var lock = bentoLockState(dateStr);
-    if (lock.locked){ toast(bentoLockMessage(lock.reason), true); return; }
+    if (lock.locked){ return; }
     cell.setAttribute('aria-pressed', dragValue > 0 ? 'true' : 'false');
     cell.textContent = dragValue > 0 ? String(dragValue) : '';
     changedCount++;
@@ -3058,7 +3066,7 @@ function bindBentoOrderTable(){
     cell.addEventListener('pointerdown', function(e){
       var dateStr = cell.getAttribute('data-order-date');
       var lock = bentoLockState(dateStr);
-      if (lock.locked){ toast(bentoLockMessage(lock.reason), true); return; }
+      if (lock.locked){ return; }
       touched = {};
       changedCount = 0;
       dragValue = (cell.getAttribute('aria-pressed') === 'true') ? 0 : 1;
@@ -3454,6 +3462,27 @@ function bindMasterView(){
       var w = state.workers.find(function(x){return x.id===id;});
       state.db.collection('workers').doc(id).update({bento: !(w.bento!==false)});
     });
+  });
+  function moveWorker(id, dir){
+    var sorted = state.workers.slice().sort(function(a,b){return (a.order||0)-(b.order||0);});
+    var idx = sorted.findIndex(function(w){return w.id===id;});
+    var swapIdx = idx + dir;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= sorted.length) return;
+    var batch = state.db.batch();
+    sorted.forEach(function(w, i){ w._newOrder = i; });
+    var tmp = sorted[idx]._newOrder;
+    sorted[idx]._newOrder = sorted[swapIdx]._newOrder;
+    sorted[swapIdx]._newOrder = tmp;
+    sorted.forEach(function(w){
+      if ((w.order||0) !== w._newOrder) batch.update(state.db.collection('workers').doc(w.id), {order: w._newOrder});
+    });
+    batch.commit().then(function(){ toast('並び順を変更しました'); });
+  }
+  document.querySelectorAll('[data-worker-move-up]').forEach(function(el){
+    el.addEventListener('click', function(){ moveWorker(el.getAttribute('data-worker-move-up'), -1); });
+  });
+  document.querySelectorAll('[data-worker-move-down]').forEach(function(el){
+    el.addEventListener('click', function(){ moveWorker(el.getAttribute('data-worker-move-down'), 1); });
   });
   var saveBentoSettingsBtn = document.querySelector('[data-act="save-bento-settings"]');
   if (saveBentoSettingsBtn) saveBentoSettingsBtn.addEventListener('click', function(){
