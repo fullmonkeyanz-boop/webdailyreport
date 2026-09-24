@@ -225,7 +225,6 @@ a{color:var(--accent)}
   background:var(--accent);color:#fff;font-weight:700;font-size:12px;
   text-decoration:none;
 }
-.bento-link-btn:hover{background:var(--accent-strong);border-color:var(--accent-strong)}
 
 /* ============ month nav ============ */
 .month-nav{display:flex;align-items:center;justify-content:space-between;gap:10px}
@@ -880,7 +879,7 @@ function renderInputView(){
     return (
       '<div class="view"><div class="panel">' +
         '<div class="panel-head"><h2>作業者を選択</h2></div>' +
-        '<a class="bento-link-btn" href="bento_index.html">🍱 弁当注文はこちら</a>' +
+        '<div class="bento-link-btn">🍱 弁当注文はこちら</div>' +
         '<div class="worker-grid">' +
           list.map(function(w){ return '<button class="worker-btn" data-worker="'+w.id+'">'+escapeHtml(w.name)+'</button>'; }).join('') +
         '</div>' +
