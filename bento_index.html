@@ -690,7 +690,6 @@ function renderTopbar(){
     '<div class="topbar">' +
       '<div class="topbar-row">' +
         '<div class="brand"><span class="mark">弁当注文</span><span class="sub">お弁当の注文管理</span></div>' +
-        '<button type="button" class="btn btn-ghost btn-sm" data-act="back-to-nippou" style="padding:4px 8px">← 日報へ戻る</button>' +
       '</div>' +
       '<div class="tabs" role="tablist">' + tabsHtml + '</div>' +
     '</div>'
@@ -719,16 +718,6 @@ function bindTopbar(){
     confirmModal('メールを送る', '本日の注文内容を、設定された通知先メールアドレスへ送信します。よろしいですか？', function(){
       sendBentoEmailNow();
     });
-  });
-  var backBtn = document.querySelector('[data-act="back-to-nippou"]');
-  if (backBtn) backBtn.addEventListener('click', function(){
-    // 日報アプリからリンクを新しいタブ/ウィンドウで開いた場合はそのタブを閉じる。
-    // 同じタブ内の遷移で来た場合(履歴が残っている場合)はブラウザの「戻る」と同じ動作にする。
-    if (window.history.length > 1) {
-      window.history.back();
-    } else {
-      window.close();
-    }
   });
 }
 
