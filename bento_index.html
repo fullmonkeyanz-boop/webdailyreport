@@ -230,6 +230,8 @@ tr.bento-row-holiday td{background:var(--red-soft)}
 .banner-list .row{display:flex;justify-content:space-between;padding:2px 0}
 .call-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:11px 18px;border-radius:99px;background:var(--accent);color:#fff!important;font-weight:700;font-size:14.5px;text-decoration:none;min-height:44px;border:none}
 .call-btn:active{background:var(--accent-strong)}
+.call-btn.mail-btn{background:var(--surface);color:var(--accent-strong)!important;border:1.5px solid var(--accent)}
+.call-btn.mail-btn:active{background:var(--accent-soft)}
 
 .bento-others{font-size:12.5px;color:var(--text-muted)}
 .bento-others .row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px dashed var(--border)}
@@ -261,6 +263,11 @@ var FIREBASE_CONFIG = {
   messagingSenderId: "1096605483410",
   appId: "1:1096605483410:web:e465f64e7ed0de4df3014b"
 };
+
+/* ▼▼▼ 「メールを送る」ボタン用。bento_email_notifier.gs をウェブアプリとして
+   追加デプロイしたときのURL(https://script.google.com/macros/s/.../exec)に
+   書き換えてください ▼▼▼ */
+var MAIL_SEND_URL = 'https://script.google.com/macros/s/AKfycbx0KQoPXe4pBP9lnJKYIWFUU_1OiF7RqUfYAFZqZMFM_3uHKB6SCJZzuEO1SalsKOdXng/exec';
 
 var DOW_LABELS = ['日','月','火','水','木','金','土'];
 var SALT = 'seiban-nippou-v1::';
@@ -305,6 +312,20 @@ function nextMonth(y,m){ return m===12 ? {y:y+1,m:1} : {y:y,m:m+1}; }
 function dowOf(dateStr){ return new Date(dateStr+'T00:00:00').getDay(); }
 function todayStr(){ return ymd(TODAY.y, TODAY.m, TODAY.d); }
 function telHref(phone){ return 'tel:' + String(phone||'').replace(/[^0-9+]/g,''); }
+function sendBentoEmailNow(){
+  if (!MAIL_SEND_URL || MAIL_SEND_URL.indexOf('PUT_YOUR_MAIL_WEBAPP_URL') === 0){
+    toast('メール送信機能が未設定です', true);
+    return;
+  }
+  toast('送信しています…');
+  fetch(MAIL_SEND_URL, {method:'POST', body: JSON.stringify({})})
+    .then(function(res){ return res.json(); })
+    .then(function(json){
+      if (json && json.ok) toast('メールを送信しました');
+      else toast((json && json.error) || '送信に失敗しました', true);
+    })
+    .catch(function(){ toast('送信に失敗しました。通信環境をご確認ください', true); });
+}
 function escapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
@@ -323,6 +344,11 @@ function activeBentoWorkers(){ return activeWorkers().filter(function(w){ return
 function getBentoDayAll(doc, day){
   var key = pad2(day);
   return (doc && doc.days && doc.days[key]) ? doc.days[key] : {};
+}
+function applyBentoLocal(doc, key, workerId, qty){
+  if (!doc.days) doc.days = {};
+  if (!doc.days[key]) doc.days[key] = {};
+  doc.days[key][workerId] = qty;
 }
 function bentoDayTotalAll(doc, day, workers){
   var dayAll = getBentoDayAll(doc, day);
@@ -532,22 +558,36 @@ function subscribeBentoMonthDoc(){
   });
 }
 function saveBentoQty(dateStr, workerId, qty, silent){
-  if (!state.db) return;
   var parts = dateStr.split('-');
   var y = +parts[0], m = +parts[1], d = +parts[2];
-  var id = yyyymm(y,m);
-  var ref = state.db.doc('bentoOrders/' + id);
   var key = pad2(d);
+  var id = yyyymm(y,m);
+
+  // 楽観的更新: Firestoreからの応答(onSnapshot)を待たず、先にローカルのstateへ反映する。
+  // これをしないと、タップ直後にendDrag()等が呼ぶrender()が「まだサーバーから
+  // 更新が返ってきていない古いstate.bentoDoc」で画面を再構築してしまい、
+  // タップした結果が一瞬で消えたように見える(実際には保存自体は進行中)。
+  if (state.bentoYM && id === yyyymm(state.bentoYM.y, state.bentoYM.m)){
+    if (!state.bentoDoc) state.bentoDoc = {days:{}};
+    applyBentoLocal(state.bentoDoc, key, workerId, qty);
+  }
+  if (dateStr === todayStr()){
+    if (!state.bentoTodayDoc) state.bentoTodayDoc = {days:{}};
+    applyBentoLocal(state.bentoTodayDoc, key, workerId, qty);
+  }
+
+  if (!state.db) return;
+  var ref = state.db.doc('bentoOrders/' + id);
   var days = {}; days[key] = {}; days[key][workerId] = qty;
-  ref.update({days: days, updatedAt: Date.now()}).catch(function(err){
-    if (err && err.code === 'invalid_argument' || err && err.code === 'not-found'){
-      return ref.set({yyyymm: id, days: days, updatedAt: Date.now()}, {merge:true});
-    }
-    throw err;
-  }).then(function(){
+  // set({merge:true})は既存ドキュメントが無ければ作成し、あればネストしたオブジェクトを
+  // キー単位で再帰マージする(update()に素のオブジェクトを渡すと、その月のdaysフィールド
+  // 全体を丸ごと上書きしてしまい、かつドキュメントが存在しない新規の月では失敗する)。
+  ref.set({yyyymm: id, days: days, updatedAt: Date.now()}, {merge:true}).then(function(){
     if (!silent) toast('注文を保存しました');
   }).catch(function(){
     toast('保存に失敗しました', true);
+    // ローカルの楽観的表示を破棄し、サーバーの状態を取り直す
+    subscribeBentoMonthDoc();
   });
 }
 function saveBentoInvoice(dateY, dateM, amount){
@@ -560,8 +600,32 @@ function saveBentoInvoice(dateY, dateM, amount){
 }
 
 /* ================= render root ================= */
-function render(){
+// render()はapp.innerHTMLを丸ごと作り直すため、そのままだと注文一覧テーブルの
+// スクロール位置やページ全体のスクロール位置が毎回リセットされ、マスをタップする
+// たびに表示が月の先頭(1日目)に戻ってしまう。そこで、明示的にresetScrollを
+// 指定した場合(月の切り替えなど)を除き、直前のスクロール位置を保持する。
+function captureScrollState(){
+  var tableEl = document.querySelector('.order-table-wrap');
+  return {
+    windowY: window.scrollY,
+    tableScrollTop: tableEl ? tableEl.scrollTop : null
+  };
+}
+function restoreScrollState(s){
+  if (s.tableScrollTop !== null){
+    var tableEl = document.querySelector('.order-table-wrap');
+    if (tableEl) tableEl.scrollTop = s.tableScrollTop;
+  }
+  window.scrollTo(0, s.windowY);
+}
+function render(opts){
   if (state.bentoDragActive) return;
+  var resetScroll = opts && opts.resetScroll;
+  var scrollState = resetScroll ? null : captureScrollState();
+  renderInner();
+  if (scrollState) restoreScrollState(scrollState);
+}
+function renderInner(){
   var app = document.getElementById('app');
 
   if (state.dbNotConfigured){
@@ -603,20 +667,17 @@ function renderBentoBanner(){
   var namesHtml = info.list.map(function(it){
     return '<div class="row"><span>'+escapeHtml(it.name)+'</span><span>'+it.qty+'個</span></div>';
   }).join('');
-  if (!info.cutoffPassed){
-    return (
-      '<div class="banner banner-amber">' +
-        '<div class="banner-title">🍱 本日のお弁当　合計 '+info.total+'個　—　'+pad2(num(state.bentoSettings.cutoffHour))+':'+pad2(num(state.bentoSettings.cutoffMinute))+'までに要連絡</div>' +
-        '<div class="banner-list">' + namesHtml + '</div>' +
-        '<div class="btn-row" style="margin-top:8px">' +
-          '<button type="button" class="call-btn" data-act="call-tsukasa">📞 つかさへ連絡</button>' +
-        '</div>' +
-      '</div>'
-    );
-  }
+  var btnRow =
+    '<div class="btn-row" style="margin-top:8px">' +
+      '<button type="button" class="call-btn" data-act="call-tsukasa">📞 電話をかける</button>' +
+      '<button type="button" class="call-btn mail-btn" data-act="send-mail-now">✉️ メールを送る</button>' +
+    '</div>';
+  // 締切時刻を過ぎても表示は変えない(通知・表示は締切前と同じ内容のまま維持する)
   return (
-    '<div class="banner banner-muted">' +
-      '<div class="banner-title">本日の注文（'+info.total+'個）は締め切りました</div>' +
+    '<div class="banner banner-amber">' +
+      '<div class="banner-title">🍱 本日のお弁当　合計 '+info.total+'個　—　'+pad2(num(state.bentoSettings.cutoffHour))+':'+pad2(num(state.bentoSettings.cutoffMinute))+'までに要連絡</div>' +
+      '<div class="banner-list">' + namesHtml + '</div>' +
+      btnRow +
     '</div>'
   );
 }
@@ -629,6 +690,7 @@ function renderTopbar(){
     '<div class="topbar">' +
       '<div class="topbar-row">' +
         '<div class="brand"><span class="mark">弁当注文</span><span class="sub">お弁当の注文管理</span></div>' +
+        '<button type="button" class="btn btn-ghost btn-sm" data-act="back-to-nippou" style="padding:4px 8px">← 日報へ戻る</button>' +
       '</div>' +
       '<div class="tabs" role="tablist">' + tabsHtml + '</div>' +
     '</div>'
@@ -642,15 +704,31 @@ function bindTopbar(){
     el.addEventListener('click', function(){
       state.view = el.getAttribute('data-tab');
       if (state.view === 'bento'){ ensureBentoYM(); subscribeBentoMonthDoc(); }
-      render();
+      render({resetScroll:true});
     });
   });
   var callBtn = document.querySelector('[data-act="call-tsukasa"]');
   if (callBtn) callBtn.addEventListener('click', function(){
     var phone = state.bentoSettings.phone;
-    confirmModal('つかさへ連絡', escapeHtml(phone) + ' に電話をかけます。よろしいですか？', function(){
+    confirmModal('電話をかける', escapeHtml(phone) + ' に電話をかけます。よろしいですか？', function(){
       window.location.href = telHref(phone);
     });
+  });
+  var mailBtn = document.querySelector('[data-act="send-mail-now"]');
+  if (mailBtn) mailBtn.addEventListener('click', function(){
+    confirmModal('メールを送る', '本日の注文内容を、設定された通知先メールアドレスへ送信します。よろしいですか？', function(){
+      sendBentoEmailNow();
+    });
+  });
+  var backBtn = document.querySelector('[data-act="back-to-nippou"]');
+  if (backBtn) backBtn.addEventListener('click', function(){
+    // 日報アプリからリンクを新しいタブ/ウィンドウで開いた場合はそのタブを閉じる。
+    // 同じタブ内の遷移で来た場合(履歴が残っている場合)はブラウザの「戻る」と同じ動作にする。
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.close();
+    }
   });
 }
 
@@ -816,8 +894,8 @@ function renderBentoMonthSummary(y, m, doc){
 function bindBentoView(){
   var prevM = document.querySelector('[data-act="bento-prev-month"]');
   var nextM = document.querySelector('[data-act="bento-next-month"]');
-  if (prevM) prevM.addEventListener('click', function(){ state.bentoYM = prevMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate=null; subscribeBentoMonthDoc(); render(); });
-  if (nextM) nextM.addEventListener('click', function(){ state.bentoYM = nextMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate=null; subscribeBentoMonthDoc(); render(); });
+  if (prevM) prevM.addEventListener('click', function(){ state.bentoYM = prevMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate=null; subscribeBentoMonthDoc(); render({resetScroll:true}); });
+  if (nextM) nextM.addEventListener('click', function(){ state.bentoYM = nextMonth(state.bentoYM.y, state.bentoYM.m); state.bentoSelDate=null; subscribeBentoMonthDoc(); render({resetScroll:true}); });
 
   document.querySelectorAll('[data-bday]').forEach(function(el){
     el.addEventListener('click', function(){
@@ -1077,7 +1155,7 @@ function bindMasterView(){
   if (lockBtn) lockBtn.addEventListener('click', function(){ state.adminUnlocked = false; render(); });
 
   document.querySelectorAll('[data-msec]').forEach(function(el){
-    el.addEventListener('click', function(){ state.masterSection = el.getAttribute('data-msec'); render(); });
+    el.addEventListener('click', function(){ state.masterSection = el.getAttribute('data-msec'); render({resetScroll:true}); });
   });
 
   document.querySelectorAll('[data-toggle-bento]').forEach(function(el){
