@@ -9,6 +9,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
 /* ============ tokens (日報アプリと共通のデザイントークン) ============ */
 :root{
@@ -275,7 +276,7 @@ var TABS = [
   {id:'bento', label:'弁当'},
   {id:'master', label:'マスター'}
 ];
-var SEED_BENTO_SETTINGS = {phone:'087-841-6000', unitPrice:280, subsidyPerUnit:140, notifyEmails:['anzai-keikin@mc.pikara.ne.jp','fullmonkey.anz@gmail.com'], cutoffHour:8, cutoffMinute:15};
+var SEED_BENTO_SETTINGS = {phone:'087-841-6000', unitPrice:280, subsidyPerUnit:140, notifyEmails:['anzai-keikin@mc.pikara.ne.jp','fullmonkey.anz@gmail.com','shidashi-tsukasa@sirius.ocn.ne.jp'], cutoffHour:8, cutoffMinute:15};
 
 var state = {
   db: null,
@@ -880,6 +881,99 @@ function renderBentoMonthSummary(y, m, doc){
   );
 }
 
+/* ================= Excel出力 ================= */
+var THIN_BORDER = {top:{style:'thin'}, left:{style:'thin'}, bottom:{style:'thin'}, right:{style:'thin'}};
+function applyBorder(ws, r1, c1, r2, c2){
+  for (var r=r1; r<=r2; r++){
+    for (var c=c1; c<=c2; c++){
+      ws.getCell(r,c).border = THIN_BORDER;
+    }
+  }
+}
+function headerFill(ws, r1, c1, r2, c2){
+  for (var r=r1; r<=r2; r++){
+    for (var c=c1; c<=c2; c++){
+      ws.getCell(r,c).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0F0F0'}};
+    }
+  }
+}
+function downloadWorkbook(wb, filename){
+  wb.xlsx.writeBuffer().then(function(buffer){
+    var blob = new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    toast('Excelをダウンロードしました');
+  }).catch(function(){ toast('Excel出力に失敗しました', true); });
+}
+function exportBentoOrderExcel(){
+  if (typeof ExcelJS === 'undefined'){ toast('Excel出力ライブラリの読み込みに失敗しました', true); return; }
+  ensureBentoYM();
+  if (!state.bentoDoc){
+    if (!state.bentoDocUnsub) subscribeBentoMonthDoc();
+    toast('データを読み込んでいます。少し待ってからもう一度お試しください');
+    return;
+  }
+  var y = state.bentoYM.y, m = state.bentoYM.m;
+  var doc = state.bentoDoc;
+  var workers = activeBentoWorkers();
+  if (!workers.length){ toast('弁当注文の対象者が設定されていません', true); return; }
+  var dim = daysInMonth(y,m);
+  var unitPrice = num(state.bentoSettings.unitPrice);
+
+  var wb = new ExcelJS.Workbook();
+  var ws = wb.addWorksheet(y+'年'+m+'月');
+  var colCount = 2 + workers.length + 1;
+  ws.columns = [{width:12},{width:6}].concat(workers.map(function(){ return {width:10}; })).concat([{width:10}]);
+
+  ws.mergeCells(1,1,1,colCount);
+  ws.getCell(1,1).value = y+'年'+m+'月　お弁当注文一覧';
+  ws.getCell(1,1).font = {bold:true, size:13};
+
+  var headerRowIdx = 3;
+  var headerRow = ['日付','曜日'].concat(workers.map(function(w){ return w.name; })).concat(['合計']);
+  ws.getRow(headerRowIdx).values = headerRow;
+  ws.getRow(headerRowIdx).font = {bold:true};
+  headerFill(ws, headerRowIdx, 1, headerRowIdx, colCount);
+
+  var perWorkerTotal = {};
+  workers.forEach(function(w){ perWorkerTotal[w.id] = 0; });
+  var grandQty = 0;
+  var r = headerRowIdx;
+  for (var d=1; d<=dim; d++){
+    r++;
+    var dateStr = ymd(y,m,d);
+    var dayAll = getBentoDayAll(doc, d);
+    var rowTotal = 0;
+    var rowValues = [dateStr, DOW_LABELS[dowOf(dateStr)]];
+    workers.forEach(function(w){
+      var q = num(dayAll[w.id]);
+      if (q > 0){ perWorkerTotal[w.id] += q; rowTotal += q; }
+      rowValues.push(q > 0 ? q : '');
+    });
+    rowValues.push(rowTotal > 0 ? rowTotal : '');
+    ws.getRow(r).values = rowValues;
+    grandQty += rowTotal;
+    if (isHoliday(dateStr)){
+      for (var c=1; c<=colCount; c++){ ws.getCell(r,c).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF5DEDE'}}; }
+    }
+  }
+  r++;
+  ws.getRow(r).values = ['合計/食',''].concat(workers.map(function(w){ return perWorkerTotal[w.id]||0; })).concat([grandQty]);
+  ws.getRow(r).font = {bold:true};
+  r++;
+  ws.getRow(r).values = ['合計/円',''].concat(workers.map(function(w){ return (perWorkerTotal[w.id]||0)*unitPrice; })).concat([grandQty*unitPrice]);
+  ws.getRow(r).font = {bold:true};
+
+  applyBorder(ws, headerRowIdx, 1, r, colCount);
+
+  downloadWorkbook(wb, 'お弁当注文一覧_'+y+pad2(m)+'.xlsx');
+}
+
 function bindBentoView(){
   var prevM = document.querySelector('[data-act="bento-prev-month"]');
   var nextM = document.querySelector('[data-act="bento-next-month"]');
@@ -1088,6 +1182,11 @@ function renderMasterBentoSettings(){
       '<button class="btn btn-primary" style="margin-top:14px" data-act="save-bento-settings">保存する</button>' +
       '<hr class="divider" style="margin:16px 0">' +
       '<p class="caption">毎朝の締め切り時刻に、その日の弁当注文数をこの宛先へ自動メール送信します（定型タスクによる送信。アプリを閉じていても届きます）。</p>' +
+    '</div>' +
+    '<div class="panel">' +
+      '<div class="panel-head"><h2>注文データの出力</h2></div>' +
+      '<p class="caption" style="margin-bottom:10px">弁当タブで表示中の月（'+(state.bentoYM?state.bentoYM.y+'年'+state.bentoYM.m+'月':'今月')+'）の注文一覧をExcelファイルで出力します。月を変えたい場合は、先に弁当タブでその月を表示してからお使いください。</p>' +
+      '<button class="btn" data-act="export-bento-excel">📊 Excelで出力</button>' +
     '</div>'
   );
 }
@@ -1181,6 +1280,9 @@ function bindMasterView(){
       toast('保存しました');
     });
   });
+
+  var exportExcelBtn = document.querySelector('[data-act="export-bento-excel"]');
+  if (exportExcelBtn) exportExcelBtn.addEventListener('click', exportBentoOrderExcel);
 
   var changeBtn = document.querySelector('[data-act="admin-change"]');
   if (changeBtn) changeBtn.addEventListener('click', function(){
