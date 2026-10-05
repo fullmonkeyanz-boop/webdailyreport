@@ -178,6 +178,7 @@ a{color:var(--accent)}
 .field-row>.field{min-width:0}
 .field-row>.field input,.field-row>.field select{min-width:0}
 .num-input{font-family:var(--font-mono);text-align:right}
+.num-input[readonly]{background:var(--surface-2)}
 @media (max-width:380px){
   .field-row{grid-template-columns:1fr}
   .field input[type="date"]{max-width:none}
@@ -1010,12 +1011,16 @@ function renderDayForm(dateStr){
   }
 
   var warnKeys = state.dayWarnKeys || [];
+  var holiday = isHoliday(dateStr);
   var fieldsHtml = FIELD_DEFS.map(function(f){
     var warn = warnKeys.indexOf(f.key) !== -1;
+    // 休日は「休出」に作業時間の合計を自動表示する(手入力不可)
+    var autoHW = holiday && f.key === 'holidayWork';
+    var val = autoHW ? (total || '') : (num(day[f.key])||'');
     return (
       '<div class="field'+(warn?' field-warn':'')+'" data-field-wrap="'+f.key+'">' +
-        '<label>'+f.label+'</label>' +
-        '<input type="number" class="num-input" step="0.5" min="0" inputmode="decimal" data-field="'+f.key+'" value="'+(num(day[f.key])||'')+'">' +
+        '<label>'+f.label+(autoHW?'（自動）':'')+'</label>' +
+        '<input type="number" class="num-input" step="0.5" min="0" inputmode="decimal" data-field="'+f.key+'" value="'+val+'"'+(autoHW?' readonly tabindex="-1"':'')+'>' +
       '</div>'
     );
   }).join('');
@@ -1085,6 +1090,8 @@ function readDayForm(){
     }
   }
   day.items = items;
+  // 休日の出勤は作業時間の合計をそのまま休出とする
+  if (state.selDate && isHoliday(state.selDate)) day.holidayWork = computeTotal(state.selDate, day);
   return day;
 }
 function liveRecalc(){
@@ -1093,6 +1100,10 @@ function liveRecalc(){
   var total = computeTotal(state.selDate, day);
   var badge = document.getElementById('dayTotalBadge');
   if (badge) badge.textContent = displayTotal(state.selDate, day, total) + ' h';
+  if (isHoliday(state.selDate)){
+    var hwEl = document.querySelector('[data-field="holidayWork"]');
+    if (hwEl) hwEl.value = total || '';
+  }
 }
 
 /* ================= SUMMARY VIEW ================= */
@@ -3207,7 +3218,9 @@ function bindInputView(){
     var day = readDayForm();
     var total = computeTotal(state.selDate, day);
     var warnKeys = [], warnMsg = '';
-    if (total > 8){
+    if (isHoliday(state.selDate)){
+      // 休日出勤は休出＝作業時間の合計とし、8時間チェックは行わない
+    } else if (total > 8){
       // 超過分＝早出残業。有休・欠勤・遅刻・早退・休出は入力なしが正しい
       var excess = round2(total - 8);
       if (round2(day.overtime) !== excess) warnKeys.push('overtime');
