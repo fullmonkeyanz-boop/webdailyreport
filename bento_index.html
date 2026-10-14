@@ -596,7 +596,7 @@ function saveBentoInvoice(dateY, dateM, amount){
   var id = yyyymm(dateY, dateM);
   var ref = state.db.doc('bentoOrders/' + id);
   ref.set({yyyymm:id, invoiceAmount: amount, updatedAt: Date.now()}, {merge:true}).then(function(){
-    toast('請求金額を保存しました');
+    toast(amount === null ? '請求金額を消去しました' : '請求金額を保存しました');
   }).catch(function(){ toast('保存に失敗しました', true); });
 }
 
@@ -849,14 +849,7 @@ function renderBentoMonthSummary(y, m, doc){
   var employeeTotal = tot.grandQty * state.bentoSettings.unitPrice;
   var subsidyTotal = tot.grandQty * state.bentoSettings.subsidyPerUnit;
   var combinedTotal = employeeTotal + subsidyTotal;
-  var invoiceAmount = (doc && doc.invoiceAmount!==undefined && doc.invoiceAmount!==null) ? doc.invoiceAmount : null;
-  var diff = invoiceAmount!==null ? (subsidyTotal - invoiceAmount) : null;
-  var matchChip = '';
-  if (invoiceAmount!==null){
-    matchChip = diff===0
-      ? '<span class="chip chip-green">一致</span>'
-      : '<span class="chip chip-red">預り金精算不一致</span>';
-  }
+  var invoiceAmount = (doc && doc.invoiceAmount!==undefined && doc.invoiceAmount!==null && doc.invoiceAmount!=='') ? num(doc.invoiceAmount) : null;
   return (
     '<div class="panel">' +
       '<div class="panel-head"><h2>金額チェック</h2></div>' +
@@ -874,11 +867,22 @@ function renderBentoMonthSummary(y, m, doc){
           '<input type="number" class="num-input" id="bentoInvoiceInput" placeholder="例）'+subsidyTotal+'" value="'+(invoiceAmount!==null?invoiceAmount:'')+'">' +
         '</div>' +
         '<button class="btn btn-sm" data-act="save-invoice">保存</button>' +
-        matchChip +
       '</div>' +
-      (matchChip && diff!==0 ? '<p class="caption" style="margin-top:8px">会社負担額合計との差額：'+(diff>0?'+':'')+diff.toLocaleString()+'円</p>' : '') +
+      '<div id="bentoInvoiceCheck" data-subsidy-total="'+subsidyTotal+'">' + renderInvoiceCheck(invoiceAmount, subsidyTotal) + '</div>' +
     '</div>'
   );
+}
+/* 請求金額の照合表示。空欄(null)なら何も出さない。不一致なら赤チップ＋差額 */
+function renderInvoiceCheck(invoiceAmount, subsidyTotal){
+  if (invoiceAmount === null) return '';
+  var diff = subsidyTotal - invoiceAmount;
+  if (diff === 0) return '<div style="margin-top:10px"><span class="chip chip-green">一致</span></div>';
+  return '<div style="margin-top:10px"><span class="chip chip-red">預り金精算不一致</span>' +
+    '<p class="caption" style="margin-top:4px">会社負担額合計との差額：'+(diff>0?'+':'')+diff.toLocaleString()+'円</p></div>';
+}
+function readInvoiceInput(el){
+  var raw = el ? String(el.value).trim() : '';
+  return raw === '' ? null : num(raw);
 }
 
 /* ================= Excel出力 ================= */
@@ -1012,8 +1016,13 @@ function bindBentoView(){
   var saveInvBtn = document.querySelector('[data-act="save-invoice"]');
   if (saveInvBtn) saveInvBtn.addEventListener('click', function(){
     var el = document.getElementById('bentoInvoiceInput');
-    var v = el ? num(el.value) : 0;
-    saveBentoInvoice(state.bentoYM.y, state.bentoYM.m, v);
+    saveBentoInvoice(state.bentoYM.y, state.bentoYM.m, readInvoiceInput(el));
+  });
+  // 入力中もその場で照合結果を更新する(空欄にすると表示を消す)
+  var invEl = document.getElementById('bentoInvoiceInput');
+  var invBox = document.getElementById('bentoInvoiceCheck');
+  if (invEl && invBox) invEl.addEventListener('input', function(){
+    invBox.innerHTML = renderInvoiceCheck(readInvoiceInput(invEl), num(invBox.getAttribute('data-subsidy-total')));
   });
 
   bindBentoOrderTable();
