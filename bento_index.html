@@ -849,7 +849,8 @@ function renderBentoMonthSummary(y, m, doc){
   var employeeTotal = tot.grandQty * state.bentoSettings.unitPrice;
   var subsidyTotal = tot.grandQty * state.bentoSettings.subsidyPerUnit;
   var combinedTotal = employeeTotal + subsidyTotal;
-  var invoiceAmount = (doc && doc.invoiceAmount!==undefined && doc.invoiceAmount!==null && doc.invoiceAmount!=='') ? num(doc.invoiceAmount) : null;
+  // 以前のバージョンで空欄のまま保存すると0が入っていたため、0も「未入力」として空欄表示にする
+  var invoiceAmount = (doc && doc.invoiceAmount!==undefined && doc.invoiceAmount!==null && doc.invoiceAmount!=='' && num(doc.invoiceAmount)!==0) ? num(doc.invoiceAmount) : null;
   return (
     '<div class="panel">' +
       '<div class="panel-head"><h2>金額チェック</h2></div>' +
@@ -864,7 +865,7 @@ function renderBentoMonthSummary(y, m, doc){
       '<div class="btn-row" style="flex-wrap:wrap;gap:14px;align-items:flex-end">' +
         '<div class="field" style="max-width:160px">' +
           '<label>弁当屋の請求金額</label>' +
-          '<input type="number" class="num-input" id="bentoInvoiceInput" placeholder="例）'+combinedTotal+'" value="'+(invoiceAmount!==null?invoiceAmount:'')+'">' +
+          '<input type="number" class="num-input" id="bentoInvoiceInput" value="'+(invoiceAmount!==null?invoiceAmount:'')+'">' +
         '</div>' +
         '<button class="btn btn-sm" data-act="save-invoice">保存</button>' +
       '</div>' +
