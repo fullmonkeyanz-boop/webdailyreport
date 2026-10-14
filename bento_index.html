@@ -864,21 +864,22 @@ function renderBentoMonthSummary(y, m, doc){
       '<div class="btn-row" style="flex-wrap:wrap;gap:14px;align-items:flex-end">' +
         '<div class="field" style="max-width:160px">' +
           '<label>弁当屋の請求金額</label>' +
-          '<input type="number" class="num-input" id="bentoInvoiceInput" placeholder="例）'+subsidyTotal+'" value="'+(invoiceAmount!==null?invoiceAmount:'')+'">' +
+          '<input type="number" class="num-input" id="bentoInvoiceInput" placeholder="例）'+combinedTotal+'" value="'+(invoiceAmount!==null?invoiceAmount:'')+'">' +
         '</div>' +
         '<button class="btn btn-sm" data-act="save-invoice">保存</button>' +
       '</div>' +
-      '<div id="bentoInvoiceCheck" data-subsidy-total="'+subsidyTotal+'">' + renderInvoiceCheck(invoiceAmount, subsidyTotal) + '</div>' +
+      '<div id="bentoInvoiceCheck" data-expected-total="'+combinedTotal+'">' + renderInvoiceCheck(invoiceAmount, combinedTotal) + '</div>' +
     '</div>'
   );
 }
-/* 請求金額の照合表示。空欄(null)なら何も出さない。不一致なら赤チップ＋差額 */
-function renderInvoiceCheck(invoiceAmount, subsidyTotal){
+/* 請求金額の照合表示。預り金(社員負担)＋会社負担の合計と比べる。
+   空欄(null)なら何も出さない。不一致なら赤チップ＋差額 */
+function renderInvoiceCheck(invoiceAmount, expectedTotal){
   if (invoiceAmount === null) return '';
-  var diff = subsidyTotal - invoiceAmount;
+  var diff = expectedTotal - invoiceAmount;
   if (diff === 0) return '<div style="margin-top:10px"><span class="chip chip-green">一致</span></div>';
   return '<div style="margin-top:10px"><span class="chip chip-red">預り金精算不一致</span>' +
-    '<p class="caption" style="margin-top:4px">会社負担額合計との差額：'+(diff>0?'+':'')+diff.toLocaleString()+'円</p></div>';
+    '<p class="caption" style="margin-top:4px">預り金＋会社負担の合計との差額：'+(diff>0?'+':'')+diff.toLocaleString()+'円</p></div>';
 }
 function readInvoiceInput(el){
   var raw = el ? String(el.value).trim() : '';
@@ -1022,7 +1023,7 @@ function bindBentoView(){
   var invEl = document.getElementById('bentoInvoiceInput');
   var invBox = document.getElementById('bentoInvoiceCheck');
   if (invEl && invBox) invEl.addEventListener('input', function(){
-    invBox.innerHTML = renderInvoiceCheck(readInvoiceInput(invEl), num(invBox.getAttribute('data-subsidy-total')));
+    invBox.innerHTML = renderInvoiceCheck(readInvoiceInput(invEl), num(invBox.getAttribute('data-expected-total')));
   });
 
   bindBentoOrderTable();
