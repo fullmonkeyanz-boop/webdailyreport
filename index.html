@@ -1783,7 +1783,55 @@ function headerFill(ws, r1, c1, r2, c2){
     }
   }
 }
+/* Excel出力の共通書式: 全行の高さを18にし、列幅をセルの文字がすべて見える幅に広げる */
+var EXCEL_ROW_HEIGHT = 18;
+function excelTextWidth(text){
+  var w = 0;
+  Array.from(String(text)).forEach(function(ch){
+    // 全角文字(半角カナ以外の非ASCII)は2、半角は1として数える
+    w += /[^\x00-\xff｡-ﾟ]/.test(ch) ? 2 : 1;
+  });
+  return w;
+}
+function excelCellText(cell){
+  var v = cell.value;
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number'){
+    var t = v.toLocaleString('ja-JP');
+    if (cell.numFmt && cell.numFmt.indexOf('¥') !== -1) t = '¥' + t;
+    return t;
+  }
+  if (v instanceof Date) return '0000-00-00';
+  if (typeof v === 'object'){
+    if (v.richText) return v.richText.map(function(p){ return p.text||''; }).join('');
+    if (v.result !== undefined) return String(v.result);
+    if (v.text !== undefined) return String(v.text);
+  }
+  return String(v);
+}
+function formatSheetLayout(ws){
+  ws.properties.defaultRowHeight = EXCEL_ROW_HEIGHT;
+  var colWidths = {};
+  for (var r=1; r<=ws.rowCount; r++){
+    var row = ws.getRow(r);
+    row.height = EXCEL_ROW_HEIGHT;
+    row.eachCell({includeEmpty:false}, function(cell, c){
+      if (cell.isMerged) return; // 結合セル(タイトル行など)は列幅の計算に含めない
+      var lines = excelCellText(cell).split('\n');
+      var w = 0;
+      lines.forEach(function(line){ w = Math.max(w, excelTextWidth(line)); });
+      var bold = cell.font && cell.font.bold;
+      w = Math.ceil(w * (bold ? 1.15 : 1.05)) + 2; // 太字・余白ぶんを上乗せ
+      colWidths[c] = Math.max(colWidths[c] || 0, w);
+    });
+  }
+  Object.keys(colWidths).forEach(function(c){
+    var col = ws.getColumn(Number(c));
+    col.width = Math.max(col.width || 0, colWidths[c]);
+  });
+}
 function downloadWorkbook(wb, filename){
+  wb.eachSheet(function(ws){ formatSheetLayout(ws); });
   wb.xlsx.writeBuffer().then(function(buffer){
     var blob = new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
     var url = URL.createObjectURL(blob);
